@@ -1,1 +1,4 @@
-PyNaCl
+PyNaCl>=1.5.0
+argon2-cffi>=23.1.0
+click>=8.1.7
+websockets>=12.0
