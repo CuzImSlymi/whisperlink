@@ -4,6 +4,9 @@ import json
 import socket
 import threading
 import subprocess
+import asyncio
+import websockets
+import urllib.parse
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 
@@ -17,13 +20,19 @@ class TunnelManager:
     
     def __init__(self):
         self.active_tunnels: Dict[int, str] = {}  # port -> tunnel_url
+        self.ws_bridge_port = 9002  # WebSocket bridge port
+        self.ws_bridge_running = False
     
     def create_tunnel(self, local_port: int) -> Optional[str]:
         """Create a tunnel to expose local port"""
         try:
+            # Start WebSocket bridge if not running
+            if not self.ws_bridge_running:
+                self._start_websocket_bridge(local_port)
+            
             # Try to use localtunnel if available
             result = subprocess.run([
-                'npx', 'localtunnel', '--port', str(local_port)
+                'npx', 'localtunnel', '--port', str(self.ws_bridge_port)
             ], capture_output=True, text=True, timeout=10)
             
             if result.returncode == 0:
@@ -41,8 +50,66 @@ class TunnelManager:
         tunnel_id = uuid.uuid4().hex[:8]
         tunnel_url = f"https://{tunnel_id}.loca.lt"
         self.active_tunnels[local_port] = tunnel_url
-        print(f"Simulated tunnel created: {tunnel_url} -> localhost:{local_port}")
+        print(f"Simulated tunnel created: {tunnel_url} -> localhost:{self.ws_bridge_port}")
         return tunnel_url
+    
+    def _start_websocket_bridge(self, tcp_port: int):
+        """Start WebSocket bridge to forward to TCP server"""
+        def run_bridge():
+            async def handle_ws_client(websocket, path):
+                try:
+                    # Connect to the local TCP server
+                    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    tcp_sock.connect(('127.0.0.1', tcp_port))
+                    
+                    async def tcp_to_ws():
+                        try:
+                            while True:
+                                data = tcp_sock.recv(4096)
+                                if not data:
+                                    break
+                                await websocket.send(data)
+                        except Exception as e:
+                            print(f"TCP->WS error: {e}")
+                        finally:
+                            tcp_sock.close()
+                    
+                    async def ws_to_tcp():
+                        try:
+                            async for message in websocket:
+                                tcp_sock.sendall(message)
+                        except Exception as e:
+                            print(f"WS->TCP error: {e}")
+                        finally:
+                            tcp_sock.close()
+                    
+                    # Run both directions concurrently
+                    await asyncio.gather(
+                        tcp_to_ws(),
+                        ws_to_tcp(),
+                        return_exceptions=True
+                    )
+                except Exception as e:
+                    print(f"Bridge error: {e}")
+            
+            async def main():
+                print(f"WebSocket bridge listening on 127.0.0.1:{self.ws_bridge_port} -> 127.0.0.1:{tcp_port}")
+                async with websockets.serve(handle_ws_client, '127.0.0.1', self.ws_bridge_port):
+                    self.ws_bridge_running = True
+                    await asyncio.Future()  # run forever
+            
+            try:
+                asyncio.run(main())
+            except Exception as e:
+                print(f"WebSocket bridge error: {e}")
+                self.ws_bridge_running = False
+        
+        bridge_thread = threading.Thread(target=run_bridge, daemon=True)
+        bridge_thread.start()
+        
+        # Wait a moment for bridge to start
+        import time
+        time.sleep(1)
     
     def close_tunnel(self, local_port: int):
         """Close an active tunnel"""
@@ -209,9 +276,11 @@ class ConnectionManager:
                 # Direct IP connection
                 host, port = contact.address.split(':')
                 client_socket.connect((host, int(port)))
+            elif contact.connection_type == "tunnel" and contact.tunnel_url:
+                # WebSocket tunnel connection
+                return self._connect_via_websocket(peer_id, contact.tunnel_url)
             else:
-                # For simplicity, assume tunnel connections use a standard port
-                return False  # Implement tunnel connection logic here
+                return False
             
             # Send handshake
             handshake = {
@@ -341,13 +410,28 @@ class ConnectionManager:
                 'timestamp': datetime.now().isoformat()
             }
             
-            # Send message
-            connection.socket_obj.send(json.dumps(message_data).encode())
-            return True
+            # Send message based on connection type
+            if connection.websocket_obj:
+                # WebSocket connection
+                asyncio.create_task(self._send_websocket_message(connection.websocket_obj, message_data))
+                return True
+            elif connection.socket_obj:
+                # Socket connection
+                connection.socket_obj.send(json.dumps(message_data).encode())
+                return True
+            else:
+                return False
             
         except Exception as e:
             print(f"Failed to send message: {e}")
             return False
+    
+    async def _send_websocket_message(self, websocket, message_data):
+        """Send message via WebSocket"""
+        try:
+            await websocket.send(json.dumps(message_data))
+        except Exception as e:
+            print(f"Failed to send WebSocket message: {e}")
     
     def disconnect_from_peer(self, peer_id: str):
         """Disconnect from a peer"""
@@ -368,3 +452,127 @@ class ConnectionManager:
     def get_connection(self, peer_id: str) -> Optional[Connection]:
         """Get connection by peer ID"""
         return self.connections.get(peer_id)
+    
+    def _connect_via_websocket(self, peer_id: str, tunnel_url: str) -> bool:
+        """Connect to peer via WebSocket tunnel"""
+        try:
+            # Convert https:// to wss://
+            if tunnel_url.startswith('https://'):
+                ws_url = tunnel_url.replace('https://', 'wss://')
+            elif tunnel_url.startswith('http://'):
+                ws_url = tunnel_url.replace('http://', 'ws://')
+            else:
+                ws_url = tunnel_url
+            
+            # Add /ws path if not present
+            if not ws_url.endswith('/ws'):
+                ws_url = ws_url.rstrip('/') + '/ws'
+            
+            # Run WebSocket connection in new thread
+            def ws_connect():
+                try:
+                    asyncio.run(self._websocket_connect(peer_id, ws_url))
+                except Exception as e:
+                    print(f"WebSocket connection failed: {e}")
+            
+            ws_thread = threading.Thread(target=ws_connect, daemon=True)
+            ws_thread.start()
+            
+            # Wait a moment for connection to establish
+            import time
+            time.sleep(2)
+            
+            return peer_id in self.connections
+            
+        except Exception as e:
+            print(f"Failed to connect via WebSocket: {e}")
+            return False
+    
+    async def _websocket_connect(self, peer_id: str, ws_url: str):
+        """Establish WebSocket connection"""
+        try:
+            contact = self.contact_manager.get_contact(peer_id)
+            current_user = self.user_manager.get_current_user()
+            
+            if not contact or not current_user:
+                return
+            
+            async with websockets.connect(ws_url) as websocket:
+                # Send handshake
+                handshake = {
+                    'user_id': current_user.user_id,
+                    'username': current_user.username,
+                    'public_key': current_user.public_key
+                }
+                await websocket.send(json.dumps(handshake))
+                
+                # Receive handshake response
+                response_data = await websocket.recv()
+                response = json.loads(response_data)
+                
+                if response.get('status') != 'accepted':
+                    return
+                
+                # Create connection object with WebSocket
+                connection = Connection(
+                    peer_id=peer_id,
+                    peer_username=contact.username,
+                    connection_type="tunnel",
+                    address="websocket",
+                    port=0,
+                    status="connected",
+                    established_at=datetime.now().isoformat(),
+                    websocket_obj=websocket
+                )
+                
+                self.connections[peer_id] = connection
+                
+                # Update contact last seen
+                self.contact_manager.update_contact_last_seen(peer_id)
+                
+                print(f"Successfully connected to {contact.username} via tunnel")
+                
+                # Handle messages
+                await self._handle_websocket_messages(peer_id, websocket)
+                
+        except Exception as e:
+            print(f"WebSocket connection error: {e}")
+    
+    async def _handle_websocket_messages(self, peer_id: str, websocket):
+        """Handle messages from WebSocket connection"""
+        try:
+            async for message in websocket:
+                try:
+                    message_data = json.loads(message)
+                    message_type = message_data.get('type')
+                    
+                    if message_type == 'chat':
+                        encrypted_message = message_data.get('message')
+                        timestamp = message_data.get('timestamp')
+                        
+                        # Decrypt message
+                        current_user = self.user_manager.get_current_user()
+                        contact = self.contact_manager.get_contact(peer_id)
+                        
+                        if current_user and contact:
+                            crypto = CryptoManager()
+                            decrypted_message = crypto.decrypt_message(
+                                current_user.private_key,
+                                contact.public_key,
+                                encrypted_message
+                            )
+                            
+                            # Call message handlers
+                            for handler in self.message_handlers:
+                                handler(peer_id, contact.username, decrypted_message, timestamp)
+                    
+                except json.JSONDecodeError:
+                    continue
+                    
+        except Exception as e:
+            print(f"Error handling WebSocket messages from {peer_id}: {e}")
+        finally:
+            # Connection closed
+            if peer_id in self.connections:
+                self.connections[peer_id].status = "disconnected"
+                del self.connections[peer_id]

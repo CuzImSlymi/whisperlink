@@ -287,7 +287,11 @@ class WhisperLinkCLI:
             
             if self.contact_manager.add_contact(peer_id, username, public_key, "tunnel", tunnel_url=tunnel_url):
                 print("Contact added.")
-                print("⚠️ Tunnel connections not fully implemented in MVP.")
+                print("Connecting via tunnel...")
+                if self.connection_manager.connect_to_peer(peer_id):
+                    print("✅ Successfully connected via tunnel!")
+                else:
+                    print("❌ Failed to connect via tunnel.")
             else:
                 print("Contact already exists.")
     

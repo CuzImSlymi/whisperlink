@@ -32,3 +32,4 @@ class Connection:
     status: str  # "connecting", "connected", "disconnected"
     established_at: Optional[str] = None
     socket_obj: Optional[object] = None
+    websocket_obj: Optional[object] = None
