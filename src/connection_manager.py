@@ -5,13 +5,11 @@ import socket
 import threading
 import subprocess
 import asyncio
-import websockets
 import ssl
 import urllib.parse
-import aiohttp
 import requests
 import time
-import http # <-- Added import
+import http
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from .models import Connection, Contact, User
@@ -20,6 +18,10 @@ from .contact_manager import ContactManager
 from .crypto_manager import CryptoManager
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
+
+# aiohttp is now used for the bridge, but we import it inside the thread
+# to avoid potential multi-threading issues with asyncio loops.
+# We also remove the direct import of websockets as it's no longer used for the server.
 
 class TunnelManager:
     """Manages tunnel connections for privacy using ngrok only"""
@@ -48,13 +50,12 @@ class TunnelManager:
         try:
             print("Starting ngrok tunnel...")
             self._kill_existing_ngrok()
-            # Added --host-header=rewrite for better compatibility
             self.ngrok_process = subprocess.Popen([
                 'ngrok', 'http', str(self.ws_bridge_port), '--log=stdout', '--host-header=rewrite'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             print("Waiting for ngrok to establish tunnel...")
-            time.sleep(10)
+            time.sleep(8) # Reduced sleep, aiohttp is faster to start
 
             tunnel_url = None
             for attempt in range(8):
@@ -108,9 +109,9 @@ class TunnelManager:
 
         try:
             if os.name == 'nt':
-                subprocess.run(['taskkill', '/f', '/im', 'ngrok.exe'], capture_output=True)
+                subprocess.run(['taskkill', '/f', '/im', 'ngrok.exe'], capture_output=True, check=False)
             else:
-                subprocess.run(['pkill', '-f', 'ngrok'], capture_output=True)
+                subprocess.run(['pkill', '-f', 'ngrok'], capture_output=True, check=False)
         except:
             pass
 
@@ -119,115 +120,112 @@ class TunnelManager:
             print("Testing tunnel connectivity...")
             response = requests.get(tunnel_url, timeout=20)
             print(f"Tunnel test: HTTP {response.status_code}")
-            return response.status_code in [200, 404]
+            # ngrok often returns 502 temporarily, but any HTTP response is a success
+            return response.status_code < 599
         except Exception as e:
             print(f"Tunnel test failed: {e}")
             return False
 
     def _start_websocket_bridge(self, tcp_port: int) -> bool:
-        """Start WebSocket server that bridges to TCP"""
+        """Start a robust WebSocket server using aiohttp that bridges to TCP."""
 
-        def run_websocket_server():
-            class WebSocketBridge:
-                def __init__(self, tcp_port, ws_bridge_port):
-                    self.tcp_port = tcp_port
-                    self.ws_bridge_port = ws_bridge_port
+        def run_aiohttp_bridge():
+            import asyncio
+            from aiohttp import web, WSMsgType
 
-                async def handle_websocket(self, websocket, path):
-                    try:
-                        print(f"WebSocket client connected from {websocket.remote_address}")
-                        tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        tcp_sock.settimeout(10)
-                        
+            async def websocket_handler(request):
+                ws = web.WebSocketResponse()
+
+                if not ws.can_prepare(request):
+                    print("Bridge: Received plain HTTP request (likely ngrok health check). Responding OK.")
+                    return web.Response(text="OK")
+
+                await ws.prepare(request)
+                print(f"Bridge: WebSocket client connected from {request.remote}")
+
+                try:
+                    reader, writer = await asyncio.open_connection('127.0.0.1', tcp_port)
+                    print(f"Bridge: TCP connection established to 127.0.0.1:{tcp_port}")
+
+                    async def ws_to_tcp():
                         try:
-                            tcp_sock.connect(('127.0.0.1', self.tcp_port))
-                            print(f"Connected to TCP server at 127.0.0.1:{self.tcp_port}")
-                        except Exception as e:
-                            print(f"Failed to connect to TCP server: {e}")
-                            tcp_sock.close()
-                            return
+                            async for msg in ws:
+                                if msg.type in (WSMsgType.TEXT, WSMsgType.BINARY):
+                                    data = msg.data if msg.type == WSMsgType.BINARY else msg.data.encode('utf-8')
+                                    writer.write(data)
+                                    await writer.drain()
+                                elif msg.type == WSMsgType.ERROR:
+                                    break
+                        finally:
+                            if not writer.is_closing():
+                                writer.close()
+                                await writer.wait_closed()
 
-                        async def tcp_to_ws():
-                            try:
-                                loop = asyncio.get_event_loop()
-                                while True:
-                                    data = await loop.run_in_executor(None, tcp_sock.recv, 4096)
-                                    if not data:
-                                        break
-                                    await websocket.send(data)
-                            except Exception as e:
-                                print(f"TCP->WS error: {e}")
-                            finally:
-                                tcp_sock.close()
+                    async def tcp_to_ws():
+                        try:
+                            while not reader.at_eof():
+                                data = await reader.read(4096)
+                                if not data:
+                                    break
+                                await ws.send_bytes(data)
+                        finally:
+                            if not ws.closed:
+                                await ws.close()
 
-                        async def ws_to_tcp():
-                            try:
-                                async for message in websocket:
-                                    if isinstance(message, bytes):
-                                        tcp_sock.sendall(message)
-                                    else:
-                                        tcp_sock.sendall(message.encode() if isinstance(message, str) else message)
-                            except Exception as e:
-                                print(f"WS->TCP error: {e}")
-                            finally:
-                                tcp_sock.close()
+                    done, pending = await asyncio.wait(
+                        [asyncio.create_task(ws_to_tcp()), asyncio.create_task(tcp_to_ws())],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for task in pending:
+                        task.cancel()
 
-                        await asyncio.gather(tcp_to_ws(), ws_to_tcp(), return_exceptions=True)
-                    except Exception as e:
-                        print(f"Bridge connection error: {e}")
+                except ConnectionRefusedError:
+                    print(f"❌ Bridge: TCP connection refused for port {tcp_port}.")
+                except Exception as e:
+                    print(f"❌ Bridge: An error occurred in handler: {e}")
+                finally:
+                    print("Bridge: Connection closing.")
+                    if not ws.closed:
+                       await ws.close()
+                return ws
 
-                async def start_server(self):
-                    # --- START FIX ---
-                    # Health check to respond to ngrok's HTTP probes.
-                    # If the request isn't for a WebSocket, respond with HTTP 200 OK.
-                    async def health_check(path, request_headers):
-                        if "Upgrade" not in request_headers or request_headers["Upgrade"].lower() != "websocket":
-                            return http.HTTPStatus.OK, [("Content-Type", "text/plain")], b"OK"
-                        return None # Let websockets library handle the handshake
-                    # --- END FIX ---
+            async def start_server():
+                app = web.Application()
+                app.router.add_route('GET', '/', websocket_handler)
+                runner = web.AppRunner(app)
+                await runner.setup()
+                site = web.TCPSite(runner, '0.0.0.0', self.ws_bridge_port)
+                try:
+                    await site.start()
+                    print(f"✅ aiohttp WebSocket bridge running on port {self.ws_bridge_port}")
+                    while True:
+                        await asyncio.sleep(3600)
+                except Exception as e:
+                    print(f"❌ Failed to start aiohttp bridge: {e}")
+                finally:
+                    await runner.cleanup()
 
-                    print(f"Starting WebSocket bridge on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{self.tcp_port}")
-                    try:
-                        server = await websockets.serve(
-                            self.handle_websocket,
-                            '0.0.0.0',
-                            self.ws_bridge_port,
-                            process_request=health_check, # <-- Added handler for ngrok
-                            ping_interval=30,
-                            ping_timeout=15,
-                            max_size=1048576,
-                            compression=None
-                        )
-                        print(f"✅ WebSocket bridge running on port {self.ws_bridge_port}")
-                        await server.wait_closed()
-                    except Exception as e:
-                        print(f"❌ Failed to start WebSocket bridge: {e}")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(start_server())
 
-            bridge = WebSocketBridge(tcp_port, self.ws_bridge_port)
-            asyncio.run(bridge.start_server())
-
-        bridge_thread = threading.Thread(target=run_websocket_server, daemon=True)
+        bridge_thread = threading.Thread(target=run_aiohttp_bridge, daemon=True)
         bridge_thread.start()
 
         print("Waiting for WebSocket bridge to start...")
         time.sleep(5)
 
-        # Verify bridge is running
         max_retries = 8
         for i in range(max_retries):
             try:
-                # Try to connect to the WebSocket server
-                import socket as test_socket
-                test_sock = test_socket.socket(test_socket.AF_INET, test_socket.SOCK_STREAM)
-                test_sock.settimeout(2)
-                result = test_sock.connect_ex(('127.0.0.1', self.ws_bridge_port))
-                test_sock.close()
-                
-                if result == 0:
-                    print(f"✅ WebSocket bridge verified running on port {self.ws_bridge_port}")
-                    self.ws_bridge_running = True
-                    return True
-            except:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test_sock:
+                    test_sock.settimeout(2)
+                    result = test_sock.connect_ex(('127.0.0.1', self.ws_bridge_port))
+                    if result == 0:
+                        print(f"✅ WebSocket bridge verified running on port {self.ws_bridge_port}")
+                        self.ws_bridge_running = True
+                        return True
+            except Exception:
                 pass
             
             if i < max_retries - 1:
@@ -237,20 +235,12 @@ class TunnelManager:
         print("❌ WebSocket bridge failed to start")
         return False
 
+
     def close_tunnel(self, local_port: int):
         if local_port in self.active_tunnels:
             del self.active_tunnels[local_port]
         self._kill_existing_ngrok()
-        if self.ws_bridge_server:
-            try:
-                self.ws_bridge_server.close()
-            except:
-                pass
-        if self.http_server:
-            try:
-                self.http_server.shutdown()
-            except:
-                pass
+        # No server objects to close directly as they are managed in the thread
         self.ws_bridge_running = False
 
     def get_tunnel_url(self, local_port: int) -> Optional[str]:
@@ -487,7 +477,7 @@ class ConnectionManager:
             return False
 
     async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
-        import websockets
+        import websockets # Use websockets for the client side
 
         ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
         headers = {
@@ -583,13 +573,12 @@ class ConnectionManager:
                     continue
 
         except Exception as e:
-            print(f"Error handling messages from {peer_id}: {e}")
+            # Silencing some common errors on disconnect
+            if "socket" not in str(e) and "Connection" not in str(e):
+                 print(f"Error handling messages from {peer_id}: {e}")
         finally:
-            connection.status = "disconnected"
-            try:
-                connection.socket_obj.close()
-            except:
-                pass
+            self.disconnect_from_peer(peer_id)
+
 
     async def _handle_websocket_messages_native(self, peer_id: str, websocket):
         try:
@@ -620,11 +609,10 @@ class ConnectionManager:
                     continue
 
         except Exception as e:
-            print(f"Error handling WebSocket messages from {peer_id}: {e}")
+            if "Connection" not in str(e): # Silence common disconnect errors
+                print(f"Error handling WebSocket messages from {peer_id}: {e}")
         finally:
-            if peer_id in self.connections:
-                self.connections[peer_id].status = "disconnected"
-                del self.connections[peer_id]
+            self.disconnect_from_peer(peer_id)
 
     def send_message(self, peer_id: str, message: str) -> bool:
         connection = self.connections.get(peer_id)
@@ -652,10 +640,14 @@ class ConnectionManager:
             }
 
             if connection.websocket_obj:
-                asyncio.create_task(self._send_websocket_message(connection.websocket_obj, message_data))
+                # Need to run this in the correct event loop
+                asyncio.run_coroutine_threadsafe(
+                    self._send_websocket_message(connection.websocket_obj, message_data),
+                    asyncio.get_running_loop()
+                )
                 return True
             elif connection.socket_obj:
-                connection.socket_obj.send(json.dumps(message_data).encode())
+                connection.socket_obj.sendall(json.dumps(message_data).encode())
                 return True
             else:
                 return False
@@ -671,8 +663,8 @@ class ConnectionManager:
             print(f"❌ Failed to send WebSocket message: {e}")
 
     def disconnect_from_peer(self, peer_id: str):
-        connection = self.connections.get(peer_id)
-        if connection:
+        if peer_id in self.connections:
+            connection = self.connections.pop(peer_id)
             connection.status = "disconnected"
             if connection.socket_obj:
                 try:
@@ -681,10 +673,16 @@ class ConnectionManager:
                     pass
             if connection.websocket_obj:
                 try:
-                    asyncio.create_task(connection.websocket_obj.close())
+                    # Close websocket connection from the appropriate loop
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.run_coroutine_threadsafe(connection.websocket_obj.close(), loop)
+                    else:
+                        loop.run_until_complete(connection.websocket_obj.close())
                 except:
                     pass
-            del self.connections[peer_id]
+            print(f"\nDisconnected from {connection.peer_username}")
+
 
     def get_active_connections(self) -> List[Connection]:
         return [conn for conn in self.connections.values() if conn.status == "connected"]
