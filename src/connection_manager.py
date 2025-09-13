@@ -17,118 +17,93 @@ from .contact_manager import ContactManager
 from .crypto_manager import CryptoManager
 
 class TunnelManager:
-    """Manages tunnel connections for privacy"""
-    
-    def __init__(self):
-        self.active_tunnels: Dict[int, str] = {}  # port -> tunnel_url
-        self.ws_bridge_port = 9002  # WebSocket bridge port
-        self.ws_bridge_running = False
-    
-    def create_tunnel(self, local_port: int) -> Optional[str]:
-        """Create a tunnel to expose local port"""
+    """Manages tunnel connections for privacy using a direct WebSocket server."""
+
+    def __init__(self, connection_handler: callable):
+        self.active_tunnel_url: Optional[str] = None
+        self.ws_server_port = 9002
+        self.ws_server_running = False
+        self._connection_handler = connection_handler
+        self._stop_server_event = asyncio.Event()
+        self.server_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def create_tunnel(self) -> Optional[str]:
+        """Create a tunnel to expose the WebSocket server."""
         try:
-            # Start WebSocket bridge if not running
-            if not self.ws_bridge_running:
-                print(f"Starting WebSocket bridge for port {local_port}")
-                self._start_websocket_bridge(local_port)
-            
-            # Try to use localtunnel if available
-            print(f"Attempting to create tunnel for port {self.ws_bridge_port}")
-            result = subprocess.run([
-                'npx', 'localtunnel', '--port', str(self.ws_bridge_port)
-            ], capture_output=True, text=True, timeout=15)
-            
-            print(f"Localtunnel result: {result.returncode}")
-            print(f"Localtunnel stdout: {result.stdout}")
-            print(f"Localtunnel stderr: {result.stderr}")
-            
+            if not self.ws_server_running:
+                print(f"Starting WebSocket server for tunneling on port {self.ws_server_port}")
+                self._start_websocket_server()
+
+            # Use localtunnel to expose the WebSocket server port
+            print(f"Attempting to create tunnel for port {self.ws_server_port}")
+            result = subprocess.run(
+                ['npx', 'localtunnel', '--port', str(self.ws_server_port)],
+                capture_output=True, text=True, timeout=15
+            )
+
             if result.returncode == 0:
-                # Parse tunnel URL from output
                 lines = result.stdout.strip().split('\n')
                 for line in lines:
                     if 'https://' in line:
-                        tunnel_url = line.strip()
-                        self.active_tunnels[local_port] = tunnel_url
-                        print(f"✅ Real tunnel created: {tunnel_url}")
-                        return tunnel_url
-        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-            print(f"Localtunnel failed: {e}")
-        
-        # Fallback: simulate tunnel creation
-        tunnel_id = uuid.uuid4().hex[:8]
-        tunnel_url = f"https://{tunnel_id}.loca.lt"
-        self.active_tunnels[local_port] = tunnel_url
-        print(f"⚠️ Simulated tunnel created: {tunnel_url} -> localhost:{self.ws_bridge_port}")
-        print("Note: This is a simulated tunnel. For real connections, install localtunnel:")
-        print("npm install -g localtunnel")
-        return tunnel_url
-    
-    def _start_websocket_bridge(self, tcp_port: int):
-        """Start WebSocket bridge to forward to TCP server"""
-        def run_bridge():
-            async def handle_ws_client(websocket, path):
-                try:
-                    # Connect to the local TCP server
-                    tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    tcp_sock.connect(('127.0.0.1', tcp_port))
-                    
-                    async def tcp_to_ws():
-                        try:
-                            while True:
-                                data = tcp_sock.recv(4096)
-                                if not data:
-                                    break
-                                await websocket.send(data)
-                        except Exception as e:
-                            print(f"TCP->WS error: {e}")
-                        finally:
-                            tcp_sock.close()
-                    
-                    async def ws_to_tcp():
-                        try:
-                            async for message in websocket:
-                                tcp_sock.sendall(message)
-                        except Exception as e:
-                            print(f"WS->TCP error: {e}")
-                        finally:
-                            tcp_sock.close()
-                    
-                    # Run both directions concurrently
-                    await asyncio.gather(
-                        tcp_to_ws(),
-                        ws_to_tcp(),
-                        return_exceptions=True
-                    )
-                except Exception as e:
-                    print(f"Bridge error: {e}")
+                        self.active_tunnel_url = line.strip()
+                        print(f"✅ Tunnel created: {self.active_tunnel_url}")
+                        return self.active_tunnel_url
             
+            # Localtunnel command failed
+            print(f"❌ Localtunnel command failed. Stderr: {result.stderr.strip()}")
+            print("   Please ensure 'localtunnel' is installed and accessible:")
+            print("   npm install -g localtunnel")
+            return None
+
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            print("❌ `localtunnel` command not found or timed out.")
+            print("   Please ensure Node.js is installed and that 'localtunnel' is installed globally:")
+            print("   npm install -g localtunnel")
+            return None
+
+    def _start_websocket_server(self):
+        """Starts the native WebSocket server in a background thread."""
+        def run_server():
             async def main():
-                print(f"WebSocket bridge listening on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{tcp_port}")
-                async with websockets.serve(handle_ws_client, '0.0.0.0', self.ws_bridge_port):
-                    self.ws_bridge_running = True
-                    await asyncio.Future()  # run forever
-            
+                server = await websockets.serve(
+                    self._connection_handler, '0.0.0.0', self.ws_server_port
+                )
+                self.ws_server_running = True
+                print(f"WebSocket server listening on 0.0.0.0:{self.ws_server_port}")
+
+                # Wait until the stop event is set
+                await self._stop_server_event.wait()
+
+                # Gracefully shut down the server
+                server.close()
+                await server.wait_closed()
+                self.ws_server_running = False
+                print("WebSocket server stopped.")
+
             try:
-                asyncio.run(main())
+                # Set a new event loop for this thread
+                self.server_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.server_loop)
+                self.server_loop.run_until_complete(main())
             except Exception as e:
-                print(f"WebSocket bridge error: {e}")
-                self.ws_bridge_running = False
-        
-        bridge_thread = threading.Thread(target=run_bridge, daemon=True)
-        bridge_thread.start()
-        
-        # Wait a moment for bridge to start
+                print(f"WebSocket server error: {e}")
+                self.ws_server_running = False
+
+        server_thread = threading.Thread(target=run_server, daemon=True)
+        server_thread.start()
         import time
-        time.sleep(1)
-    
-    def close_tunnel(self, local_port: int):
-        """Close an active tunnel"""
-        if local_port in self.active_tunnels:
-            del self.active_tunnels[local_port]
-    
-    def get_tunnel_url(self, local_port: int) -> Optional[str]:
-        """Get tunnel URL for a local port"""
-        return self.active_tunnels.get(local_port)
+        time.sleep(1)  # Give it a moment to start up
+
+    def close_tunnel(self):
+        """Stops the WebSocket server."""
+        if self.ws_server_running:
+            # Signal the server to stop
+            self._stop_server_event.set()
+        self.active_tunnel_url = None
+
+    def get_tunnel_url(self) -> Optional[str]:
+        """Get the active tunnel URL."""
+        return self.active_tunnel_url
 
 class ConnectionManager:
     """Manages P2P connections with other peers"""
@@ -136,7 +111,7 @@ class ConnectionManager:
     def __init__(self, user_manager: UserManager, contact_manager: ContactManager):
         self.user_manager = user_manager
         self.contact_manager = contact_manager
-        self.tunnel_manager = TunnelManager()
+        self.tunnel_manager = TunnelManager(self._handle_incoming_websocket_connection)
         self.connections: Dict[str, Connection] = {}
         self.server_socket: Optional[socket.socket] = None
         self.server_port: Optional[int] = None
@@ -148,36 +123,47 @@ class ConnectionManager:
         self.message_handlers.append(handler)
     
     def start_listening(self, port: int = 0, use_tunnel: bool = False) -> Tuple[bool, str]:
-        """Start listening for incoming connections"""
-        try:
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind(('0.0.0.0', port))
-            self.server_socket.listen(5)
-            
-            # Get the actual port if 0 was specified
-            self.server_port = self.server_socket.getsockname()[1]
-            self.listening = True
-            
-            # Start listening thread
-            listen_thread = threading.Thread(target=self._listen_for_connections, daemon=True)
-            listen_thread.start()
-            
-            connection_info = f"localhost:{self.server_port}"
-            
-            if use_tunnel:
-                tunnel_url = self.tunnel_manager.create_tunnel(self.server_port)
-                if tunnel_url:
-                    connection_info = tunnel_url
-            
-            return True, connection_info
-            
-        except Exception as e:
-            return False, str(e)
+        """Start listening for incoming connections."""
+        if self.listening:
+            return False, "Already listening."
+
+        self.listening = True
+
+        if use_tunnel:
+            # Tunnel mode: Start WebSocket server and tunnel
+            tunnel_url = self.tunnel_manager.create_tunnel()
+            if tunnel_url:
+                self.server_port = self.tunnel_manager.ws_server_port
+                return True, tunnel_url
+            else:
+                self.listening = False
+                return False, "Failed to create tunnel."
+        else:
+            # Direct mode: Start TCP server
+            try:
+                self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                self.server_socket.bind(('0.0.0.0', port))
+                self.server_socket.listen(5)
+                self.server_port = self.server_socket.getsockname()[1]
+
+                listen_thread = threading.Thread(target=self._listen_for_connections, daemon=True)
+                listen_thread.start()
+
+                connection_info = f"localhost:{self.server_port}"
+                return True, connection_info
+            except Exception as e:
+                self.listening = False
+                return False, str(e)
     
     def stop_listening(self):
         """Stop listening for connections"""
+        if not self.listening:
+            return
+
         self.listening = False
+
+        # If TCP server was running
         if self.server_socket:
             try:
                 self.server_socket.close()
@@ -185,9 +171,9 @@ class ConnectionManager:
                 pass
             self.server_socket = None
         
-        # Close any active tunnels
-        if self.server_port:
-            self.tunnel_manager.close_tunnel(self.server_port)
+        # If tunnel was running
+        self.tunnel_manager.close_tunnel()
+        self.server_port = None
     
     def _listen_for_connections(self):
         """Listen for incoming connections (runs in background thread)"""
@@ -207,6 +193,63 @@ class ConnectionManager:
                 if self.listening:  # Only log if we're supposed to be listening
                     print(f"Error accepting connection: {e}")
                 break
+
+    async def _handle_incoming_websocket_connection(self, websocket, path: str):
+        """Handle an incoming WebSocket connection from the tunnel."""
+        peer_id = None
+        try:
+            # The first message is the handshake
+            handshake_data = await websocket.recv()
+            handshake = json.loads(handshake_data)
+
+            peer_id = handshake.get('user_id')
+            peer_username = handshake.get('username')
+
+            if not all([peer_id, peer_username, handshake.get('public_key')]):
+                await websocket.close(1002, "Handshake incomplete")
+                return
+
+            current_user = self.user_manager.get_current_user()
+            if not current_user:
+                await websocket.close(1008, "Server user not logged in")
+                return
+
+            # Send handshake response
+            response = {
+                'user_id': current_user.user_id,
+                'username': current_user.username,
+                'public_key': current_user.public_key,
+                'status': 'accepted'
+            }
+            await websocket.send(json.dumps(response))
+
+            # Create connection object
+            connection = Connection(
+                peer_id=peer_id,
+                peer_username=peer_username,
+                connection_type="tunnel-incoming",
+                address=websocket.remote_address[0],
+                port=websocket.remote_address[1],
+                status="connected",
+                established_at=datetime.now().isoformat(),
+                websocket_obj=websocket
+            )
+            self.connections[peer_id] = connection
+            self.contact_manager.update_contact_last_seen(peer_id)
+            print(f"\n✅ Incoming tunnel connection from {peer_username} ({peer_id[:8]}...)")
+
+            # Handle messages from this peer
+            await self._handle_websocket_messages(peer_id, websocket)
+
+        except (websockets.exceptions.ConnectionClosed, json.JSONDecodeError) as e:
+            print(f"WebSocket connection closed with {peer_id or 'unknown peer'}: {e}")
+        except Exception as e:
+            print(f"Error handling incoming WebSocket connection: {e}")
+        finally:
+            if peer_id and peer_id in self.connections:
+                del self.connections[peer_id]
+            if not websocket.closed:
+                await websocket.close()
     
     def _handle_incoming_connection(self, client_socket: socket.socket, client_address: tuple):
         """Handle an incoming connection"""
@@ -446,13 +489,34 @@ class ConnectionManager:
     def disconnect_from_peer(self, peer_id: str):
         """Disconnect from a peer"""
         connection = self.connections.get(peer_id)
-        if connection:
-            connection.status = "disconnected"
-            if connection.socket_obj:
+        if not connection:
+            return
+
+        connection.status = "disconnected"
+
+        # Close TCP socket if it exists
+        if connection.socket_obj:
+            try:
+                connection.socket_obj.close()
+            except Exception as e:
+                print(f"Error closing socket for {peer_id}: {e}")
+
+        # Close WebSocket if it exists
+        if connection.websocket_obj and not connection.websocket_obj.closed:
+            loop = self.tunnel_manager.server_loop
+            if loop and loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
+                    connection.websocket_obj.close(), loop
+                )
                 try:
-                    connection.socket_obj.close()
-                except:
-                    pass
+                    # Wait for the coroutine to finish
+                    future.result(timeout=2)
+                    print(f"WebSocket for {peer_id} closed.")
+                except Exception as e:
+                    print(f"Error closing WebSocket for {peer_id}: {e}")
+
+        # Remove from active connections
+        if peer_id in self.connections:
             del self.connections[peer_id]
     
     def get_active_connections(self) -> List[Connection]:
@@ -464,89 +528,70 @@ class ConnectionManager:
         return self.connections.get(peer_id)
     
     def _connect_via_websocket(self, peer_id: str, tunnel_url: str) -> bool:
-        """Connect to peer via WebSocket tunnel"""
+        """Connect to a peer via a WebSocket tunnel."""
         try:
-            # Convert https:// to wss://
+            # Convert http(s) URL to ws(s) URL
             if tunnel_url.startswith('https://'):
-                ws_url = tunnel_url.replace('https://', 'wss://')
+                ws_url = tunnel_url.replace('https://', 'wss://', 1)
             elif tunnel_url.startswith('http://'):
-                ws_url = tunnel_url.replace('http://', 'ws://')
+                ws_url = tunnel_url.replace('http://', 'ws://', 1)
             else:
-                ws_url = tunnel_url
-            
-            # Try different WebSocket paths for different tunnel services
-            if not ws_url.endswith(('/ws', '/websocket', '/socket.io')):
-                # Try /ws first (most common)
-                ws_url = ws_url.rstrip('/') + '/ws'
-            
-            # Run WebSocket connection in new thread
-            def ws_connect():
+                print(f"Invalid tunnel URL scheme: {tunnel_url}")
+                return False
+
+            # The WebSocket connection runs in a separate thread with its own event loop
+            def ws_connect_thread():
                 try:
-                    asyncio.run(self._websocket_connect(peer_id, ws_url))
+                    # Each thread needs its own event loop
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self._websocket_connect(peer_id, ws_url))
                 except Exception as e:
-                    print(f"WebSocket connection failed: {e}")
-            
-            ws_thread = threading.Thread(target=ws_connect, daemon=True)
+                    print(f"WebSocket connection thread failed: {e}")
+
+            ws_thread = threading.Thread(target=ws_connect_thread, daemon=True)
             ws_thread.start()
-            
-            # Wait a moment for connection to establish
+
+            # Give the connection a moment to establish
             import time
-            time.sleep(2)
-            
-            return peer_id in self.connections
-            
+            time.sleep(3)
+
+            return peer_id in self.connections and self.connections[peer_id].status == "connected"
+
         except Exception as e:
-            print(f"Failed to connect via WebSocket: {e}")
+            print(f"Failed to initiate WebSocket connection: {e}")
             return False
-    
+
     async def _websocket_connect(self, peer_id: str, ws_url: str):
-        """Establish WebSocket connection"""
+        """Establishes and handles a client WebSocket connection."""
+        print(f"Attempting to connect to WebSocket: {ws_url}")
         try:
             contact = self.contact_manager.get_contact(peer_id)
             current_user = self.user_manager.get_current_user()
-            
             if not contact or not current_user:
                 return
-            
-            # Try multiple WebSocket paths
-            paths_to_try = ['/ws', '/websocket', '/socket.io', '']
-            base_url = ws_url.split('/ws')[0].split('/websocket')[0].split('/socket.io')[0]
-            
-            for path in paths_to_try:
-                test_url = base_url + path
-                print(f"Trying WebSocket path: {test_url}")
-                
-                # Try SSL connection first (for wss://)
-                if test_url.startswith('wss://'):
-                    try:
-                        # Create SSL context that doesn't verify certificates for tunnel connections
-                        ssl_context = ssl.create_default_context()
-                        ssl_context.check_hostname = False
-                        ssl_context.verify_mode = ssl.CERT_NONE
-                        
-                        async with websockets.connect(test_url, ssl=ssl_context) as websocket:
-                            print(f"✅ Connected via SSL WebSocket: {test_url}")
-                            await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
-                            return
-                    except Exception as e:
-                        print(f"SSL WebSocket failed for {test_url}: {e}")
-                        # Try non-SSL version
-                        test_url = test_url.replace('wss://', 'ws://')
-                
-                # Non-SSL connection (for ws://)
-                try:
-                    async with websockets.connect(test_url) as websocket:
-                        print(f"✅ Connected via WebSocket: {test_url}")
-                        await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
-                        return
-                except Exception as e:
-                    print(f"WebSocket failed for {test_url}: {e}")
-                    continue
-            
-            print("❌ All WebSocket connection attempts failed")
-                
+
+            # For wss://, create an SSL context that doesn't verify the cert,
+            # as localtunnel uses self-signed certificates.
+            ssl_context = None
+            if ws_url.startswith('wss://'):
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+
+            async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
+                print(f"✅ WebSocket connection established to {ws_url}")
+                await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
+
+        except (websockets.exceptions.InvalidURI, websockets.exceptions.InvalidHandshake) as e:
+            print(f"❌ Failed to connect to {ws_url}: {e}")
+            # If wss failed, try ws as a fallback
+            if ws_url.startswith('wss://'):
+                ws_fallback_url = ws_url.replace('wss://', 'ws://', 1)
+                print(f"Attempting fallback connection to {ws_fallback_url}")
+                await self._websocket_connect(peer_id, ws_fallback_url)
         except Exception as e:
-            print(f"WebSocket connection error: {e}")
+            print(f"WebSocket connection error for {ws_url}: {e}")
     
     async def _handle_websocket_connection(self, peer_id: str, websocket, contact, current_user):
         """Handle the WebSocket connection after it's established"""
