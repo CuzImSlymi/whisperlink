@@ -6,6 +6,7 @@ import threading
 import subprocess
 import asyncio
 import websockets
+import ssl
 import urllib.parse
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
@@ -497,44 +498,70 @@ class ConnectionManager:
             if not contact or not current_user:
                 return
             
+            # Try SSL connection first (for wss://)
+            if ws_url.startswith('wss://'):
+                try:
+                    # Create SSL context that doesn't verify certificates for tunnel connections
+                    ssl_context = ssl.create_default_context()
+                    ssl_context.check_hostname = False
+                    ssl_context.verify_mode = ssl.CERT_NONE
+                    
+                    async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
+                        await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
+                        return
+                except Exception as e:
+                    print(f"SSL WebSocket connection failed: {e}")
+                    print("Trying non-SSL connection...")
+                    # Fallback to non-SSL
+                    ws_url = ws_url.replace('wss://', 'ws://')
+            
+            # Non-SSL connection (for ws://)
             async with websockets.connect(ws_url) as websocket:
-                # Send handshake
-                handshake = {
-                    'user_id': current_user.user_id,
-                    'username': current_user.username,
-                    'public_key': current_user.public_key
-                }
-                await websocket.send(json.dumps(handshake))
+                await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
                 
-                # Receive handshake response
-                response_data = await websocket.recv()
-                response = json.loads(response_data)
-                
-                if response.get('status') != 'accepted':
-                    return
-                
-                # Create connection object with WebSocket
-                connection = Connection(
-                    peer_id=peer_id,
-                    peer_username=contact.username,
-                    connection_type="tunnel",
-                    address="websocket",
-                    port=0,
-                    status="connected",
-                    established_at=datetime.now().isoformat(),
-                    websocket_obj=websocket
-                )
-                
-                self.connections[peer_id] = connection
-                
-                # Update contact last seen
-                self.contact_manager.update_contact_last_seen(peer_id)
-                
-                print(f"Successfully connected to {contact.username} via tunnel")
-                
-                # Handle messages
-                await self._handle_websocket_messages(peer_id, websocket)
-                
+        except Exception as e:
+            print(f"WebSocket connection error: {e}")
+    
+    async def _handle_websocket_connection(self, peer_id: str, websocket, contact, current_user):
+        """Handle the WebSocket connection after it's established"""
+        try:
+            # Send handshake
+            handshake = {
+                'user_id': current_user.user_id,
+                'username': current_user.username,
+                'public_key': current_user.public_key
+            }
+            await websocket.send(json.dumps(handshake))
+            
+            # Receive handshake response
+            response_data = await websocket.recv()
+            response = json.loads(response_data)
+            
+            if response.get('status') != 'accepted':
+                return
+            
+            # Create connection object with WebSocket
+            connection = Connection(
+                peer_id=peer_id,
+                peer_username=contact.username,
+                connection_type="tunnel",
+                address="websocket",
+                port=0,
+                status="connected",
+                established_at=datetime.now().isoformat(),
+                websocket_obj=websocket
+            )
+            
+            self.connections[peer_id] = connection
+            
+            # Update contact last seen
+            self.contact_manager.update_contact_last_seen(peer_id)
+            
+            print(f"Successfully connected to {contact.username} via tunnel")
+            
+            # Handle messages
+            await self._handle_websocket_messages(peer_id, websocket)
+            
         except Exception as e:
             print(f"WebSocket connection error: {e}")
     
