@@ -52,11 +52,10 @@ class TunnelManager:
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             print("Waiting for ngrok to establish tunnel...")
-            time.sleep(10)  # Longer initial wait
+            time.sleep(10)
 
-            # Retry logic for ngrok API
             tunnel_url = None
-            for attempt in range(8):  # More attempts
+            for attempt in range(8):
                 try:
                     response = requests.get('http://localhost:4040/api/tunnels', timeout=10)
                     if response.status_code == 200:
@@ -118,39 +117,38 @@ class TunnelManager:
             print("Testing tunnel connectivity...")
             response = requests.get(tunnel_url, timeout=20)
             print(f"Tunnel test: HTTP {response.status_code}")
-            return response.status_code in [200, 404]  # 404 is OK for WebSocket endpoint
+            return response.status_code in [200, 404]
         except Exception as e:
             print(f"Tunnel test failed: {e}")
             return False
 
     def _start_websocket_bridge(self, tcp_port: int) -> bool:
         """Start HTTP server that handles both HTTP requests and WebSocket upgrades"""
-        
+
         class BridgeHandler(BaseHTTPRequestHandler):
-            def __init__(self, tcp_port, *args, **kwargs):
-                self.tcp_port = tcp_port
+            def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
-            
+
             def do_GET(self):
                 if self.headers.get('Upgrade', '').lower() == 'websocket':
-                    # This is a WebSocket upgrade request, let websockets handle it
                     return
                 else:
-                    # Regular HTTP request - respond with 200 OK
                     self.send_response(200)
                     self.send_header('Content-Type', 'text/plain')
                     self.end_headers()
                     self.wfile.write(b'WebSocket bridge is running')
-            
+
             def log_message(self, format, *args):
-                return  # Suppress HTTP server logs
+                return
 
         def run_hybrid_server():
             class HybridServer:
-                def __init__(self, tcp_port):
+                def __init__(self, tcp_port, ws_bridge_port):
                     self.tcp_port = tcp_port
-                    self.running = False
-                
+                    self.ws_bridge_port = ws_bridge_port
+                    self.ws_bridge_server = None
+                    self.ws_bridge_running = False
+
                 async def handle_websocket(self, websocket, path):
                     try:
                         print(f"WebSocket client connected from {websocket.remote_address}")
@@ -195,8 +193,6 @@ class TunnelManager:
 
                 async def start_servers(self):
                     print(f"Starting hybrid server on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{self.tcp_port}")
-                    
-                    # Start WebSocket server
                     try:
                         self.ws_bridge_server = await websockets.serve(
                             self.handle_websocket,
@@ -216,22 +212,19 @@ class TunnelManager:
                         self.ws_bridge_running = False
 
                 async def process_request(self, path, request_headers):
-                    # Handle regular HTTP requests
                     if request_headers.get('upgrade', '').lower() != 'websocket':
                         return (200, [('Content-Type', 'text/plain')], b'WebSocket bridge is running\n')
-                    # Let WebSocket upgrade proceed normally
                     return None
 
-            hybrid_server = HybridServer(tcp_port)
+            hybrid_server = HybridServer(tcp_port, self.ws_bridge_port)
             asyncio.run(hybrid_server.start_servers())
 
         bridge_thread = threading.Thread(target=run_hybrid_server, daemon=True)
         bridge_thread.start()
-        
-        print("Waiting for hybrid bridge to start...")
-        time.sleep(5)  # Longer wait time
 
-        # Verify bridge is running with HTTP test
+        print("Waiting for hybrid bridge to start...")
+        time.sleep(5)
+
         max_retries = 8
         for i in range(max_retries):
             try:
@@ -242,11 +235,10 @@ class TunnelManager:
                     return True
             except:
                 pass
-            
             if i < max_retries - 1:
                 print(f"Waiting for hybrid bridge... ({i+1}/{max_retries})")
                 time.sleep(3)
-        
+
         print("❌ Hybrid bridge failed to start")
         return False
 
@@ -296,8 +288,8 @@ class ConnectionManager:
 
             listen_thread = threading.Thread(target=self._listen_for_connections, daemon=True)
             listen_thread.start()
-            connection_info = f"localhost:{self.server_port}"
 
+            connection_info = f"localhost:{self.server_port}"
             if use_tunnel:
                 print("Creating secure tunnel (this may take a moment)...")
                 tunnel_url = self.tunnel_manager.create_tunnel(self.server_port)
@@ -308,6 +300,7 @@ class ConnectionManager:
                     return False, "❌ Failed to create tunnel. Try direct IP connection instead."
 
             return True, connection_info
+
         except Exception as e:
             return False, f"❌ Failed to start listening: {str(e)}"
 
@@ -318,7 +311,7 @@ class ConnectionManager:
                 self.server_socket.close()
             except:
                 pass
-        self.server_socket = None
+            self.server_socket = None
         if self.server_port:
             self.tunnel_manager.close_tunnel(self.server_port)
 
@@ -341,6 +334,7 @@ class ConnectionManager:
         try:
             handshake_data = client_socket.recv(1024).decode()
             handshake = json.loads(handshake_data)
+
             peer_id = handshake.get('user_id')
             peer_username = handshake.get('username')
             peer_public_key = handshake.get('public_key')
@@ -372,8 +366,10 @@ class ConnectionManager:
                 established_at=datetime.now().isoformat(),
                 socket_obj=client_socket
             )
+
             self.connections[peer_id] = connection
             self.contact_manager.update_contact_last_seen(peer_id)
+
             print(f"\n✅ Incoming connection established with {peer_username}")
             self._handle_peer_messages(peer_id)
 
@@ -417,6 +413,7 @@ class ConnectionManager:
                 'public_key': current_user.public_key
             }
             client_socket.send(json.dumps(handshake).encode())
+
             response_data = client_socket.recv(1024).decode()
             response = json.loads(response_data)
 
@@ -434,13 +431,14 @@ class ConnectionManager:
                 established_at=datetime.now().isoformat(),
                 socket_obj=client_socket
             )
-            self.connections[peer_id] = connection
 
+            self.connections[peer_id] = connection
             message_thread = threading.Thread(
                 target=self._handle_peer_messages,
                 args=(peer_id,), daemon=True
             )
             message_thread.start()
+
             print(f"✅ Successfully connected to {contact.username}")
             return True
 
@@ -460,6 +458,7 @@ class ConnectionManager:
                 'username': current_user.username,
                 'public_key': current_user.public_key
             }
+
             result = [False]
 
             def run_async_connect():
@@ -476,6 +475,7 @@ class ConnectionManager:
             connect_thread = threading.Thread(target=run_async_connect, daemon=True)
             connect_thread.start()
             connect_thread.join(timeout=30)
+
             return result[0]
 
         except Exception as e:
@@ -493,6 +493,7 @@ class ConnectionManager:
 
     async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
         import websockets
+
         ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
         headers = {
             'User-Agent': 'WhisperLink/1.0',
@@ -506,6 +507,7 @@ class ConnectionManager:
             ssl_context.verify_mode = ssl.CERT_NONE
 
         print(f"Attempting WebSocket connection to: {ws_url}")
+
         try:
             websocket = await asyncio.wait_for(websockets.connect(
                 ws_url,
@@ -533,8 +535,10 @@ class ConnectionManager:
                     established_at=datetime.now().isoformat(),
                     websocket_obj=websocket
                 )
+
                 self.connections[peer_id] = connection
                 self.contact_manager.update_contact_last_seen(peer_id)
+
                 print(f"✅ Successfully connected to {contact.username} via tunnel")
                 asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
                 return True
@@ -557,14 +561,18 @@ class ConnectionManager:
                 data = connection.socket_obj.recv(4096)
                 if not data:
                     break
+
                 try:
                     message_data = json.loads(data.decode())
                     message_type = message_data.get('type')
+
                     if message_type == 'chat':
                         encrypted_message = message_data.get('message')
                         timestamp = message_data.get('timestamp')
+
                         current_user = self.user_manager.get_current_user()
                         contact = self.contact_manager.get_contact(peer_id)
+
                         if current_user and contact:
                             crypto = CryptoManager()
                             decrypted_message = crypto.decrypt_message(
@@ -572,10 +580,13 @@ class ConnectionManager:
                                 contact.public_key,
                                 encrypted_message
                             )
+
                             for handler in self.message_handlers:
                                 handler(peer_id, connection.peer_username, decrypted_message, timestamp)
+
                 except json.JSONDecodeError:
                     continue
+
         except Exception as e:
             print(f"Error handling messages from {peer_id}: {e}")
         finally:
@@ -591,11 +602,14 @@ class ConnectionManager:
                 try:
                     message_data = json.loads(message)
                     message_type = message_data.get('type')
+
                     if message_type == 'chat':
                         encrypted_message = message_data.get('message')
                         timestamp = message_data.get('timestamp')
+
                         current_user = self.user_manager.get_current_user()
                         contact = self.contact_manager.get_contact(peer_id)
+
                         if current_user and contact:
                             crypto = CryptoManager()
                             decrypted_message = crypto.decrypt_message(
@@ -603,10 +617,13 @@ class ConnectionManager:
                                 contact.public_key,
                                 encrypted_message
                             )
+
                             for handler in self.message_handlers:
                                 handler(peer_id, contact.username, decrypted_message, timestamp)
+
                 except json.JSONDecodeError:
                     continue
+
         except Exception as e:
             print(f"Error handling WebSocket messages from {peer_id}: {e}")
         finally:
@@ -621,6 +638,7 @@ class ConnectionManager:
 
         current_user = self.user_manager.get_current_user()
         contact = self.contact_manager.get_contact(peer_id)
+
         if not current_user or not contact:
             return False
 
@@ -631,6 +649,7 @@ class ConnectionManager:
                 contact.public_key,
                 message
             )
+
             message_data = {
                 'type': 'chat',
                 'message': encrypted_message,
@@ -645,6 +664,7 @@ class ConnectionManager:
                 return True
             else:
                 return False
+
         except Exception as e:
             print(f"❌ Failed to send message: {e}")
             return False
