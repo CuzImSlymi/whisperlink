@@ -19,80 +19,142 @@ from .contact_manager import ContactManager
 from .crypto_manager import CryptoManager
 
 class TunnelManager:
-    """Manages tunnel connections for privacy"""
+    """Manages tunnel connections for privacy using ngrok"""
     
     def __init__(self):
         self.active_tunnels: Dict[int, str] = {}  # port -> tunnel_url
         self.ws_bridge_port = 9002  # WebSocket bridge port
         self.ws_bridge_running = False
         self.ws_bridge_server = None
+        self.ngrok_process = None
 
     def create_tunnel(self, local_port: int) -> Optional[str]:
-        """Create a tunnel to expose local port"""
+        """Create a tunnel to expose local port using ngrok"""
         try:
             # Start WebSocket bridge if not running
             if not self.ws_bridge_running:
                 print(f"Starting WebSocket bridge for port {local_port}")
                 self._start_websocket_bridge(local_port)
                 
-            # Try to use localtunnel if available with retry logic
-            return self._create_localtunnel_with_retry(local_port)
+            # Try to use ngrok if available with retry logic
+            return self._create_ngrok_tunnel_with_retry(local_port)
             
         except Exception as e:
             print(f"Tunnel creation failed: {e}")
             return None
 
-    def _create_localtunnel_with_retry(self, local_port: int, max_retries: int = 3) -> Optional[str]:
-        """Create localtunnel with retry logic"""
+    def _create_ngrok_tunnel_with_retry(self, local_port: int, max_retries: int = 3) -> Optional[str]:
+        """Create ngrok tunnel with retry logic"""
         for attempt in range(max_retries):
             try:
-                print(f"Attempting localtunnel (attempt {attempt + 1}/{max_retries})...")
-                result = subprocess.run([
-                    'npx', 'localtunnel', '--port', str(self.ws_bridge_port), '--print-requests'
-                ], capture_output=True, text=True, timeout=20)
+                print(f"Attempting ngrok tunnel (attempt {attempt + 1}/{max_retries})...")
                 
-                print(f"Localtunnel result: {result.returncode}")
-                print(f"Localtunnel stdout: {result.stdout}")
-                print(f"Localtunnel stderr: {result.stderr}")
+                # Kill any existing ngrok processes first
+                self._kill_existing_ngrok()
                 
-                if result.returncode == 0 and 'https://' in result.stdout:
-                    for line in result.stdout.strip().split('\n'):
-                        if 'https://' in line:
-                            tunnel_url = line.strip()
-                            print(f"✅ Localtunnel created (attempt {attempt + 1}): {tunnel_url}")
-                            
-                            # Test the tunnel
-                            if self._test_tunnel_connectivity(tunnel_url):
-                                self.active_tunnels[local_port] = tunnel_url
-                                return tunnel_url
-                            else:
-                                print(f"Tunnel {tunnel_url} not responding, retrying...")
-                                break
-                                
-            except subprocess.TimeoutExpired:
-                print(f"Localtunnel timeout on attempt {attempt + 1}")
+                # Start ngrok process
+                self.ngrok_process = subprocess.Popen([
+                    'ngrok', 'http', str(self.ws_bridge_port), '--log=stdout'
+                ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                
+                # Give ngrok time to start and establish tunnel
+                time.sleep(5)
+                
+                # Get tunnel URL from ngrok API
+                tunnel_url = self._get_ngrok_tunnel_url()
+                
+                if tunnel_url:
+                    print(f"✅ ngrok tunnel created (attempt {attempt + 1}): {tunnel_url}")
+                    
+                    # Test the tunnel
+                    if self._test_tunnel_connectivity(tunnel_url):
+                        self.active_tunnels[local_port] = tunnel_url
+                        return tunnel_url
+                    else:
+                        print(f"Tunnel {tunnel_url} not responding, retrying...")
+                        self._kill_existing_ngrok()
+                        
             except FileNotFoundError:
-                print("Localtunnel not found. Install with: npm install -g localtunnel")
+                print("ngrok not found. Please install ngrok:")
+                print("1. Download from https://ngrok.com/download")
+                print("2. Or install with: brew install ngrok (macOS) / choco install ngrok (Windows)")
                 break
             except Exception as e:
-                print(f"Localtunnel error on attempt {attempt + 1}: {e}")
+                print(f"ngrok error on attempt {attempt + 1}: {e}")
+                self._kill_existing_ngrok()
             
             if attempt < max_retries - 1:
-                time.sleep(2)
+                time.sleep(3)
         
-        # Fallback: simulate tunnel creation for testing
+        # If ngrok fails, try localtunnel as fallback but warn user
+        print("⚠️ ngrok failed, falling back to localtunnel (IP may be visible)")
+        return self._create_localtunnel_fallback(local_port)
+
+    def _kill_existing_ngrok(self):
+        """Kill any existing ngrok processes"""
+        try:
+            if self.ngrok_process:
+                self.ngrok_process.terminate()
+                self.ngrok_process.wait(timeout=5)
+                self.ngrok_process = None
+        except:
+            pass
+        
+        # Also try to kill via system command
+        try:
+            if os.name == 'nt':  # Windows
+                subprocess.run(['taskkill', '/f', '/im', 'ngrok.exe'], capture_output=True)
+            else:  # Unix-like
+                subprocess.run(['pkill', '-f', 'ngrok'], capture_output=True)
+        except:
+            pass
+
+    def _get_ngrok_tunnel_url(self) -> Optional[str]:
+        """Get tunnel URL from ngrok local API"""
+        try:
+            # ngrok exposes a local API on port 4040
+            response = requests.get('http://localhost:4040/api/tunnels', timeout=10)
+            if response.status_code == 200:
+                data = response.json()
+                tunnels = data.get('tunnels', [])
+                for tunnel in tunnels:
+                    if tunnel.get('proto') == 'https':
+                        return tunnel.get('public_url')
+            return None
+        except Exception as e:
+            print(f"Failed to get ngrok tunnel URL: {e}")
+            return None
+
+    def _create_localtunnel_fallback(self, local_port: int) -> Optional[str]:
+        """Fallback to localtunnel if ngrok fails"""
+        try:
+            print("Attempting localtunnel fallback...")
+            result = subprocess.run([
+                'npx', 'localtunnel', '--port', str(self.ws_bridge_port)
+            ], capture_output=True, text=True, timeout=20)
+            
+            if result.returncode == 0 and 'https://' in result.stdout:
+                for line in result.stdout.strip().split('\n'):
+                    if 'https://' in line:
+                        tunnel_url = line.strip()
+                        print(f"✅ Localtunnel fallback created: {tunnel_url}")
+                        self.active_tunnels[local_port] = tunnel_url
+                        return tunnel_url
+        except Exception as e:
+            print(f"Localtunnel fallback failed: {e}")
+        
+        # Final fallback: simulate tunnel for testing
         tunnel_id = uuid.uuid4().hex[:8]
-        tunnel_url = f"https://{tunnel_id}.loca.lt"
+        tunnel_url = f"https://{tunnel_id}.ngrok.io"
         self.active_tunnels[local_port] = tunnel_url
         print(f"⚠️ Simulated tunnel created: {tunnel_url} -> localhost:{self.ws_bridge_port}")
-        print("Note: This is a simulated tunnel. For real connections, install localtunnel:")
-        print("npm install -g localtunnel")
+        print("Note: This is a simulated tunnel. Install ngrok for real connections.")
         return tunnel_url
 
     def _test_tunnel_connectivity(self, tunnel_url: str) -> bool:
         """Test if tunnel is responsive"""
         try:
-            response = requests.get(tunnel_url, timeout=5)
+            response = requests.get(tunnel_url, timeout=10)
             return response.status_code < 500
         except:
             return False
@@ -153,7 +215,9 @@ class TunnelManager:
                         '0.0.0.0', 
                         self.ws_bridge_port,
                         ping_interval=20,
-                        ping_timeout=10
+                        ping_timeout=10,
+                        max_size=1048576,  # 1MB max message size
+                        compression=None   # Disable compression for better compatibility
                     )
                     self.ws_bridge_running = True
                     print(f"✅ WebSocket bridge running on port {self.ws_bridge_port}")
@@ -198,6 +262,9 @@ class TunnelManager:
         """Close an active tunnel"""
         if local_port in self.active_tunnels:
             del self.active_tunnels[local_port]
+            
+        # Kill ngrok process
+        self._kill_existing_ngrok()
             
         if self.ws_bridge_server:
             self.ws_bridge_server.close()
@@ -459,15 +526,12 @@ class ConnectionManager:
             return False
 
     async def _async_tunnel_connect(self, peer_id: str, contact: Contact, handshake: dict) -> bool:
-        """Establish connection via HTTP tunnel with multiple fallback methods"""
+        """Establish connection via HTTP tunnel with ngrok optimization"""
         try:
             tunnel_url = contact.tunnel_url.rstrip('/')
             print(f"Connecting to tunnel: {tunnel_url}")
             
-            # Debug tunnel connectivity first
-            await self._debug_tunnel_connection(tunnel_url)
-            
-            # Method 1: Try direct WebSocket connection with proper headers
+            # Method 1: Try direct WebSocket connection with ngrok-optimized headers
             try:
                 return await self._try_websocket_connection(peer_id, contact, handshake, tunnel_url)
             except Exception as e:
@@ -485,49 +549,25 @@ class ConnectionManager:
             print(f"Tunnel connection error: {e}")
             return False
 
-    async def _debug_tunnel_connection(self, tunnel_url: str):
-        """Debug tunnel connection issues"""
-        print(f"=== Debugging tunnel connection to {tunnel_url} ===")
-        
-        # Test HTTP connectivity
-        try:
-            response = requests.get(tunnel_url, timeout=10)
-            print(f"HTTP test: {response.status_code} - {response.reason}")
-            print(f"Response headers: {dict(response.headers)}")
-        except Exception as e:
-            print(f"HTTP test failed: {e}")
-        
-        # Test WebSocket headers
-        try:
-            response = requests.get(tunnel_url, headers={
-                'Upgrade': 'websocket',
-                'Connection': 'Upgrade',
-                'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
-                'Sec-WebSocket-Version': '13'
-            }, timeout=10)
-            print(f"WebSocket upgrade test: {response.status_code}")
-            print(f"Upgrade headers: {dict(response.headers)}")
-        except Exception as e:
-            print(f"WebSocket upgrade test failed: {e}")
-
     async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
-        """Try WebSocket connection with proper headers"""
+        """Try WebSocket connection with ngrok-optimized headers"""
         import websockets
         
         # Convert to WebSocket URL
         ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
-        # Proper headers for localtunnel
+        # Optimized headers for ngrok
         headers = {
             'User-Agent': 'WhisperLink/1.0',
-            'Origin': 'https://localhost:3000',
-            'Sec-WebSocket-Protocol': 'chat'
+            'Origin': tunnel_url,
+            'Sec-WebSocket-Protocol': 'chat, superchat'
         }
         
         # Create SSL context for HTTPS tunnels
         ssl_context = None
         if ws_url.startswith('wss://'):
             ssl_context = ssl.create_default_context()
+            # More permissive for tunnels
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
         
@@ -537,13 +577,15 @@ class ConnectionManager:
         websocket = await asyncio.wait_for(
             websockets.connect(
                 ws_url,
-                additional_headers=headers,  # Fixed from extra_headers
+                additional_headers=headers,
                 ssl=ssl_context,
-                open_timeout=15,  # Fixed from timeout
-                ping_interval=20,
-                ping_timeout=10
+                open_timeout=20,
+                ping_interval=30,
+                ping_timeout=10,
+                max_size=1048576,  # 1MB max message size
+                compression=None   # Disable compression for better compatibility
             ),
-            timeout=20.0
+            timeout=25.0
         )
         
         try:
@@ -551,7 +593,7 @@ class ConnectionManager:
             await websocket.send(json.dumps(handshake))
             
             # Wait for response with timeout
-            response_data = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+            response_data = await asyncio.wait_for(websocket.recv(), timeout=15.0)
             response = json.loads(response_data)
             
             if response.get('status') == 'accepted':
@@ -699,49 +741,6 @@ class ConnectionManager:
                                 
                 except json.JSONDecodeError:
                     continue
-                    
-        except Exception as e:
-            print(f"Error handling WebSocket messages from {peer_id}: {e}")
-        finally:
-            # Connection closed
-            if peer_id in self.connections:
-                self.connections[peer_id].status = "disconnected"
-                del self.connections[peer_id]
-
-    async def _handle_websocket_messages(self, peer_id: str, websocket):
-        """Handle messages from WebSocket connection"""
-        try:
-            async for msg in websocket:
-                if msg.type == aiohttp.WSMsgType.TEXT:
-                    try:
-                        message_data = json.loads(msg.data)
-                        message_type = message_data.get('type')
-                        
-                        if message_type == 'chat':
-                            encrypted_message = message_data.get('message')
-                            timestamp = message_data.get('timestamp')
-                            
-                            # Decrypt message
-                            current_user = self.user_manager.get_current_user()
-                            contact = self.contact_manager.get_contact(peer_id)
-                            
-                            if current_user and contact:
-                                crypto = CryptoManager()
-                                decrypted_message = crypto.decrypt_message(
-                                    current_user.private_key,
-                                    contact.public_key,
-                                    encrypted_message
-                                )
-                                
-                                # Call message handlers
-                                for handler in self.message_handlers:
-                                    handler(peer_id, contact.username, decrypted_message, timestamp)
-                                    
-                    except json.JSONDecodeError:
-                        continue
-                elif msg.type == aiohttp.WSMsgType.ERROR:
-                    print(f"WebSocket error: {websocket.exception()}")
-                    break
                     
         except Exception as e:
             print(f"Error handling WebSocket messages from {peer_id}: {e}")
