@@ -123,37 +123,20 @@ class TunnelManager:
             return False
 
     def _start_websocket_bridge(self, tcp_port: int) -> bool:
-        """Start HTTP server that handles both HTTP requests and WebSocket upgrades"""
+        """Start WebSocket server that bridges to TCP"""
 
-        class BridgeHandler(BaseHTTPRequestHandler):
-            def __init__(self, *args, **kwargs):
-                super().__init__(*args, **kwargs)
-
-            def do_GET(self):
-                if self.headers.get('Upgrade', '').lower() == 'websocket':
-                    return
-                else:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'text/plain')
-                    self.end_headers()
-                    self.wfile.write(b'WebSocket bridge is running')
-
-            def log_message(self, format, *args):
-                return
-
-        def run_hybrid_server():
-            class HybridServer:
+        def run_websocket_server():
+            class WebSocketBridge:
                 def __init__(self, tcp_port, ws_bridge_port):
                     self.tcp_port = tcp_port
                     self.ws_bridge_port = ws_bridge_port
-                    self.ws_bridge_server = None
-                    self.ws_bridge_running = False
 
                 async def handle_websocket(self, websocket, path):
                     try:
                         print(f"WebSocket client connected from {websocket.remote_address}")
                         tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                         tcp_sock.settimeout(10)
+                        
                         try:
                             tcp_sock.connect(('127.0.0.1', self.tcp_port))
                             print(f"Connected to TCP server at 127.0.0.1:{self.tcp_port}")
@@ -191,55 +174,55 @@ class TunnelManager:
                     except Exception as e:
                         print(f"Bridge connection error: {e}")
 
-                async def start_servers(self):
-                    print(f"Starting hybrid server on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{self.tcp_port}")
+                async def start_server(self):
+                    print(f"Starting WebSocket bridge on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{self.tcp_port}")
                     try:
-                        self.ws_bridge_server = await websockets.serve(
+                        server = await websockets.serve(
                             self.handle_websocket,
                             '0.0.0.0',
                             self.ws_bridge_port,
                             ping_interval=30,
                             ping_timeout=15,
                             max_size=1048576,
-                            compression=None,
-                            process_request=self.process_request
+                            compression=None
                         )
-                        self.ws_bridge_running = True
-                        print(f"✅ Hybrid bridge running on port {self.ws_bridge_port}")
-                        await self.ws_bridge_server.wait_closed()
+                        print(f"✅ WebSocket bridge running on port {self.ws_bridge_port}")
+                        await server.wait_closed()
                     except Exception as e:
-                        print(f"❌ Failed to start hybrid bridge: {e}")
-                        self.ws_bridge_running = False
+                        print(f"❌ Failed to start WebSocket bridge: {e}")
 
-                async def process_request(self, path, request_headers):
-                    if request_headers.get('upgrade', '').lower() != 'websocket':
-                        return (200, [('Content-Type', 'text/plain')], b'WebSocket bridge is running\n')
-                    return None
+            bridge = WebSocketBridge(tcp_port, self.ws_bridge_port)
+            asyncio.run(bridge.start_server())
 
-            hybrid_server = HybridServer(tcp_port, self.ws_bridge_port)
-            asyncio.run(hybrid_server.start_servers())
-
-        bridge_thread = threading.Thread(target=run_hybrid_server, daemon=True)
+        bridge_thread = threading.Thread(target=run_websocket_server, daemon=True)
         bridge_thread.start()
 
-        print("Waiting for hybrid bridge to start...")
+        print("Waiting for WebSocket bridge to start...")
         time.sleep(5)
 
+        # Verify bridge is running
         max_retries = 8
         for i in range(max_retries):
             try:
-                response = requests.get(f'http://127.0.0.1:{self.ws_bridge_port}', timeout=5)
-                if response.status_code == 200:
-                    print(f"✅ Hybrid bridge verified running on port {self.ws_bridge_port}")
+                # Try to connect to the WebSocket server
+                import socket as test_socket
+                test_sock = test_socket.socket(test_socket.AF_INET, test_socket.SOCK_STREAM)
+                test_sock.settimeout(2)
+                result = test_sock.connect_ex(('127.0.0.1', self.ws_bridge_port))
+                test_sock.close()
+                
+                if result == 0:
+                    print(f"✅ WebSocket bridge verified running on port {self.ws_bridge_port}")
                     self.ws_bridge_running = True
                     return True
             except:
                 pass
+            
             if i < max_retries - 1:
-                print(f"Waiting for hybrid bridge... ({i+1}/{max_retries})")
+                print(f"Waiting for WebSocket bridge... ({i+1}/{max_retries})")
                 time.sleep(3)
 
-        print("❌ Hybrid bridge failed to start")
+        print("❌ WebSocket bridge failed to start")
         return False
 
     def close_tunnel(self, local_port: int):
