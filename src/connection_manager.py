@@ -30,9 +30,7 @@ class TunnelManager:
         self.active_tunnels: Dict[int, str] = {}
         self.ws_bridge_port = 9002
         self.ws_bridge_running = False
-        self.ws_bridge_server = None
         self.ngrok_process = None
-        self.http_server = None
 
     def create_tunnel(self, local_port: int) -> Optional[str]:
         try:
@@ -47,21 +45,52 @@ class TunnelManager:
             return None
 
     def _create_ngrok_tunnel(self, local_port: int) -> Optional[str]:
+        """
+        Starts an ngrok tunnel, intelligently waiting for the API and capturing logs for debugging.
+        """
+        ngrok_logs = []
+        log_thread = None
         try:
             print("Starting ngrok tunnel...")
             self._kill_existing_ngrok()
-            self.ngrok_process = subprocess.Popen([
-                'ngrok', 'http', str(self.ws_bridge_port), '--log=stdout', '--host-header=rewrite'
-            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            # Start ngrok process and capture all its output
+            self.ngrok_process = subprocess.Popen(
+                ['ngrok', 'http', str(self.ws_bridge_port), '--log=stdout'],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+
+            # Thread to capture logs in real-time without blocking
+            def capture_logs(process, log_list):
+                try:
+                    for line in iter(process.stdout.readline, ''):
+                        log_list.append(line.strip())
+                except Exception:
+                    pass # stdout may be closed
+
+            log_thread = threading.Thread(target=capture_logs, args=(self.ngrok_process, ngrok_logs))
+            log_thread.daemon = True
+            log_thread.start()
 
             print("Waiting for ngrok to establish tunnel...")
-            time.sleep(8) # Reduced sleep, aiohttp is faster to start
 
             tunnel_url = None
+            api_ready = False
+            # Poll the ngrok API for up to 16 seconds to get the tunnel URL
             for attempt in range(8):
+                # Check if the process died prematurely
+                if self.ngrok_process.poll() is not None:
+                    print("❌ ngrok process terminated unexpectedly.")
+                    break
+
                 try:
-                    response = requests.get('http://localhost:4040/api/tunnels', timeout=10)
+                    response = requests.get('http://localhost:4040/api/tunnels', timeout=2)
                     if response.status_code == 200:
+                        api_ready = True
                         data = response.json()
                         tunnels = data.get('tunnels', [])
                         for tunnel in tunnels:
@@ -69,10 +98,14 @@ class TunnelManager:
                                 tunnel_url = tunnel.get('public_url')
                                 break
                         if tunnel_url:
-                            break
+                            break  # Success! Found the URL.
                 except requests.exceptions.ConnectionError:
-                    print(f"Waiting for ngrok API... (attempt {attempt + 1}/8)")
-                    time.sleep(3)
+                    if attempt == 0:
+                        print("Waiting for ngrok API to become available...")
+                    time.sleep(2)
+                except Exception as e:
+                    print(f"Error polling ngrok API: {e}")
+                    time.sleep(2)
 
             if tunnel_url:
                 print(f"✅ ngrok tunnel created: {tunnel_url}")
@@ -80,39 +113,54 @@ class TunnelManager:
                     self.active_tunnels[local_port] = tunnel_url
                     return tunnel_url
                 else:
-                    print("❌ Tunnel created but not responding")
+                    print("❌ Tunnel created but is not responding to requests.")
                     self._kill_existing_ngrok()
                     return None
             else:
-                print("❌ Failed to get tunnel URL from ngrok")
+                # This is the failure case. We now print the logs.
+                print("❌ Failed to get tunnel URL from ngrok.")
+                if not api_ready:
+                    print("   The ngrok API server at http://localhost:4040 did not become available.")
+                else:
+                    print("   The API was available, but no HTTPS tunnel was found in the response.")
+                
                 self._kill_existing_ngrok()
+                time.sleep(0.5) # Allow log thread to capture final output
+                if ngrok_logs:
+                    print("\n--- Last logs from ngrok process ---")
+                    for log_line in ngrok_logs[-20:]: # Print last 20 lines
+                        print(log_line)
+                    print("------------------------------------")
+                    print("\nHINT: Look for errors in the logs above. A common issue is a missing or invalid authtoken.")
+                    print("      You can set one by running this command in your terminal:")
+                    print("      ngrok config add-authtoken <YOUR_TOKEN>")
                 return None
 
         except FileNotFoundError:
-            print("❌ ngrok not found. Please install ngrok:")
-            print(" Download from https://ngrok.com/download")
-            print(" Or install: brew install ngrok (macOS) / choco install ngrok (Windows)")
+            print("❌ ngrok not found. Please make sure it's installed and in your system's PATH.")
+            print("   Download from https://ngrok.com/download")
             return None
         except Exception as e:
-            print(f"❌ ngrok error: {e}")
+            print(f"❌ An unexpected error occurred with ngrok: {e}")
             self._kill_existing_ngrok()
             return None
 
+
     def _kill_existing_ngrok(self):
         try:
-            if self.ngrok_process:
+            if self.ngrok_process and self.ngrok_process.poll() is None:
                 self.ngrok_process.terminate()
                 self.ngrok_process.wait(timeout=5)
-                self.ngrok_process = None
-        except:
+        except Exception:
             pass
+        self.ngrok_process = None
 
         try:
             if os.name == 'nt':
-                subprocess.run(['taskkill', '/f', '/im', 'ngrok.exe'], capture_output=True, check=False)
+                subprocess.run(['taskkill', '/f', '/im', 'ngrok.exe'], check=False, capture_output=True)
             else:
-                subprocess.run(['pkill', '-f', 'ngrok'], capture_output=True, check=False)
-        except:
+                subprocess.run(['pkill', '-f', 'ngrok'], check=False, capture_output=True)
+        except Exception:
             pass
 
     def _test_tunnel_connectivity(self, tunnel_url: str) -> bool:
@@ -120,33 +168,26 @@ class TunnelManager:
             print("Testing tunnel connectivity...")
             response = requests.get(tunnel_url, timeout=20)
             print(f"Tunnel test: HTTP {response.status_code}")
-            # ngrok often returns 502 temporarily, but any HTTP response is a success
-            return response.status_code < 599
+            return response.status_code < 599 # Any HTTP response is a sign of life
         except Exception as e:
             print(f"Tunnel test failed: {e}")
             return False
 
     def _start_websocket_bridge(self, tcp_port: int) -> bool:
         """Start a robust WebSocket server using aiohttp that bridges to TCP."""
-
         def run_aiohttp_bridge():
             import asyncio
             from aiohttp import web, WSMsgType
 
             async def websocket_handler(request):
                 ws = web.WebSocketResponse()
-
                 if not ws.can_prepare(request):
-                    print("Bridge: Received plain HTTP request (likely ngrok health check). Responding OK.")
-                    return web.Response(text="OK")
+                    return web.Response(text="OK") # Respond to ngrok health checks
 
                 await ws.prepare(request)
-                print(f"Bridge: WebSocket client connected from {request.remote}")
-
                 try:
                     reader, writer = await asyncio.open_connection('127.0.0.1', tcp_port)
-                    print(f"Bridge: TCP connection established to 127.0.0.1:{tcp_port}")
-
+                    
                     async def ws_to_tcp():
                         try:
                             async for msg in ws:
@@ -157,36 +198,25 @@ class TunnelManager:
                                 elif msg.type == WSMsgType.ERROR:
                                     break
                         finally:
-                            if not writer.is_closing():
-                                writer.close()
-                                await writer.wait_closed()
-
+                            if not writer.is_closing(): writer.close()
+                    
                     async def tcp_to_ws():
                         try:
                             while not reader.at_eof():
                                 data = await reader.read(4096)
-                                if not data:
-                                    break
+                                if not data: break
                                 await ws.send_bytes(data)
                         finally:
-                            if not ws.closed:
-                                await ws.close()
+                            if not ws.closed: await ws.close()
 
                     done, pending = await asyncio.wait(
                         [asyncio.create_task(ws_to_tcp()), asyncio.create_task(tcp_to_ws())],
                         return_when=asyncio.FIRST_COMPLETED
                     )
-                    for task in pending:
-                        task.cancel()
-
-                except ConnectionRefusedError:
-                    print(f"❌ Bridge: TCP connection refused for port {tcp_port}.")
-                except Exception as e:
-                    print(f"❌ Bridge: An error occurred in handler: {e}")
+                    for task in pending: task.cancel()
+                except Exception: pass
                 finally:
-                    print("Bridge: Connection closing.")
-                    if not ws.closed:
-                       await ws.close()
+                    if not ws.closed: await ws.close()
                 return ws
 
             async def start_server():
@@ -198,10 +228,7 @@ class TunnelManager:
                 try:
                     await site.start()
                     print(f"✅ aiohttp WebSocket bridge running on port {self.ws_bridge_port}")
-                    while True:
-                        await asyncio.sleep(3600)
-                except Exception as e:
-                    print(f"❌ Failed to start aiohttp bridge: {e}")
+                    await asyncio.Event().wait() # Run forever
                 finally:
                     await runner.cleanup()
 
@@ -211,27 +238,18 @@ class TunnelManager:
 
         bridge_thread = threading.Thread(target=run_aiohttp_bridge, daemon=True)
         bridge_thread.start()
-
         print("Waiting for WebSocket bridge to start...")
-        time.sleep(5)
-
-        max_retries = 8
-        for i in range(max_retries):
+        time.sleep(4)
+        for i in range(8):
             try:
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as test_sock:
-                    test_sock.settimeout(2)
-                    result = test_sock.connect_ex(('127.0.0.1', self.ws_bridge_port))
-                    if result == 0:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.settimeout(1)
+                    if s.connect_ex(('127.0.0.1', self.ws_bridge_port)) == 0:
                         print(f"✅ WebSocket bridge verified running on port {self.ws_bridge_port}")
                         self.ws_bridge_running = True
                         return True
-            except Exception:
-                pass
-            
-            if i < max_retries - 1:
-                print(f"Waiting for WebSocket bridge... ({i+1}/{max_retries})")
-                time.sleep(3)
-
+            except Exception: pass
+            time.sleep(2)
         print("❌ WebSocket bridge failed to start")
         return False
 
@@ -240,7 +258,6 @@ class TunnelManager:
         if local_port in self.active_tunnels:
             del self.active_tunnels[local_port]
         self._kill_existing_ngrok()
-        # No server objects to close directly as they are managed in the thread
         self.ws_bridge_running = False
 
     def get_tunnel_url(self, local_port: int) -> Optional[str]:
@@ -445,21 +462,27 @@ class ConnectionManager:
             }
 
             result = [False]
+            # We need a reference to the loop for sending messages later
+            self.websocket_loop = asyncio.new_event_loop()
 
             def run_async_connect():
+                asyncio.set_event_loop(self.websocket_loop)
                 try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    result[0] = loop.run_until_complete(self._async_tunnel_connect(peer_id, contact, handshake))
+                    result[0] = self.websocket_loop.run_until_complete(self._async_tunnel_connect(peer_id, contact, handshake))
+                    if result[0]:
+                        self.websocket_loop.run_forever()
                 except Exception as e:
                     print(f"❌ Tunnel connection error: {e}")
                     result[0] = False
                 finally:
-                    loop.close()
+                    if self.websocket_loop.is_running():
+                        self.websocket_loop.stop()
+                    self.websocket_loop.close()
 
             connect_thread = threading.Thread(target=run_async_connect, daemon=True)
             connect_thread.start()
-            connect_thread.join(timeout=30)
+            # We don't join immediately, just wait for connection result
+            time.sleep(15) # Give it time to connect
 
             return result[0]
 
@@ -480,10 +503,7 @@ class ConnectionManager:
         import websockets # Use websockets for the client side
 
         ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
-        headers = {
-            'User-Agent': 'WhisperLink/1.0',
-            'Origin': tunnel_url
-        }
+        headers = {'User-Agent': 'WhisperLink/1.0', 'Origin': tunnel_url}
 
         ssl_context = None
         if ws_url.startswith('wss://'):
@@ -495,14 +515,7 @@ class ConnectionManager:
 
         try:
             websocket = await asyncio.wait_for(websockets.connect(
-                ws_url,
-                extra_headers=headers,
-                ssl=ssl_context,
-                open_timeout=20,
-                ping_interval=30,
-                ping_timeout=15,
-                max_size=1048576,
-                compression=None
+                ws_url, extra_headers=headers, ssl=ssl_context, open_timeout=20
             ), timeout=25.0)
 
             await websocket.send(json.dumps(handshake))
@@ -511,19 +524,13 @@ class ConnectionManager:
 
             if response.get('status') == 'accepted':
                 connection = Connection(
-                    peer_id=peer_id,
-                    peer_username=contact.username,
-                    connection_type="tunnel_websocket",
-                    address="tunnel",
-                    port=0,
-                    status="connected",
-                    established_at=datetime.now().isoformat(),
+                    peer_id=peer_id, peer_username=contact.username,
+                    connection_type="tunnel_websocket", address="tunnel", port=0,
+                    status="connected", established_at=datetime.now().isoformat(),
                     websocket_obj=websocket
                 )
-
                 self.connections[peer_id] = connection
                 self.contact_manager.update_contact_last_seen(peer_id)
-
                 print(f"✅ Successfully connected to {contact.username} via tunnel")
                 asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
                 return True
@@ -531,127 +538,73 @@ class ConnectionManager:
                 await websocket.close()
                 print("❌ Handshake rejected by peer")
                 return False
-
         except Exception as e:
             print(f"❌ WebSocket connection failed: {e}")
             return False
 
     def _handle_peer_messages(self, peer_id: str):
         connection = self.connections.get(peer_id)
-        if not connection or not connection.socket_obj:
-            return
-
+        if not connection or not connection.socket_obj: return
         try:
             while connection.status == "connected":
                 data = connection.socket_obj.recv(4096)
-                if not data:
-                    break
-
+                if not data: break
                 try:
                     message_data = json.loads(data.decode())
-                    message_type = message_data.get('type')
-
-                    if message_type == 'chat':
-                        encrypted_message = message_data.get('message')
-                        timestamp = message_data.get('timestamp')
-
+                    if message_data.get('type') == 'chat':
                         current_user = self.user_manager.get_current_user()
                         contact = self.contact_manager.get_contact(peer_id)
-
                         if current_user and contact:
                             crypto = CryptoManager()
-                            decrypted_message = crypto.decrypt_message(
-                                current_user.private_key,
-                                contact.public_key,
-                                encrypted_message
-                            )
-
+                            decrypted = crypto.decrypt_message(current_user.private_key, contact.public_key, message_data.get('message'))
                             for handler in self.message_handlers:
-                                handler(peer_id, connection.peer_username, decrypted_message, timestamp)
-
-                except json.JSONDecodeError:
-                    continue
-
-        except Exception as e:
-            # Silencing some common errors on disconnect
-            if "socket" not in str(e) and "Connection" not in str(e):
-                 print(f"Error handling messages from {peer_id}: {e}")
+                                handler(peer_id, connection.peer_username, decrypted, message_data.get('timestamp'))
+                except json.JSONDecodeError: continue
+        except Exception: pass
         finally:
             self.disconnect_from_peer(peer_id)
-
 
     async def _handle_websocket_messages_native(self, peer_id: str, websocket):
         try:
             async for message in websocket:
                 try:
                     message_data = json.loads(message)
-                    message_type = message_data.get('type')
-
-                    if message_type == 'chat':
-                        encrypted_message = message_data.get('message')
-                        timestamp = message_data.get('timestamp')
-
+                    if message_data.get('type') == 'chat':
                         current_user = self.user_manager.get_current_user()
                         contact = self.contact_manager.get_contact(peer_id)
-
                         if current_user and contact:
                             crypto = CryptoManager()
-                            decrypted_message = crypto.decrypt_message(
-                                current_user.private_key,
-                                contact.public_key,
-                                encrypted_message
-                            )
-
+                            decrypted = crypto.decrypt_message(current_user.private_key, contact.public_key, message_data.get('message'))
                             for handler in self.message_handlers:
-                                handler(peer_id, contact.username, decrypted_message, timestamp)
-
-                except json.JSONDecodeError:
-                    continue
-
-        except Exception as e:
-            if "Connection" not in str(e): # Silence common disconnect errors
-                print(f"Error handling WebSocket messages from {peer_id}: {e}")
+                                handler(peer_id, contact.username, decrypted, message_data.get('timestamp'))
+                except json.JSONDecodeError: continue
+        except Exception: pass
         finally:
             self.disconnect_from_peer(peer_id)
 
     def send_message(self, peer_id: str, message: str) -> bool:
         connection = self.connections.get(peer_id)
-        if not connection or connection.status != "connected":
-            return False
-
+        if not connection or connection.status != "connected": return False
         current_user = self.user_manager.get_current_user()
         contact = self.contact_manager.get_contact(peer_id)
-
-        if not current_user or not contact:
-            return False
+        if not current_user or not contact: return False
 
         try:
             crypto = CryptoManager()
-            encrypted_message = crypto.encrypt_message(
-                current_user.private_key,
-                contact.public_key,
-                message
-            )
+            encrypted_message = crypto.encrypt_message(current_user.private_key, contact.public_key, message)
+            message_data = {'type': 'chat', 'message': encrypted_message, 'timestamp': datetime.now().isoformat()}
 
-            message_data = {
-                'type': 'chat',
-                'message': encrypted_message,
-                'timestamp': datetime.now().isoformat()
-            }
-
-            if connection.websocket_obj:
-                # Need to run this in the correct event loop
-                asyncio.run_coroutine_threadsafe(
+            if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(
                     self._send_websocket_message(connection.websocket_obj, message_data),
-                    asyncio.get_running_loop()
+                    self.websocket_loop
                 )
+                future.result(timeout=10) # Wait for the send to complete
                 return True
             elif connection.socket_obj:
                 connection.socket_obj.sendall(json.dumps(message_data).encode())
                 return True
-            else:
-                return False
-
+            return False
         except Exception as e:
             print(f"❌ Failed to send message: {e}")
             return False
@@ -667,25 +620,16 @@ class ConnectionManager:
             connection = self.connections.pop(peer_id)
             connection.status = "disconnected"
             if connection.socket_obj:
+                try: connection.socket_obj.close()
+                except: pass
+            if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
                 try:
-                    connection.socket_obj.close()
-                except:
-                    pass
-            if connection.websocket_obj:
-                try:
-                    # Close websocket connection from the appropriate loop
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.run_coroutine_threadsafe(connection.websocket_obj.close(), loop)
-                    else:
-                        loop.run_until_complete(connection.websocket_obj.close())
-                except:
-                    pass
+                    asyncio.run_coroutine_threadsafe(connection.websocket_obj.close(), self.websocket_loop)
+                except: pass
             print(f"\nDisconnected from {connection.peer_username}")
 
-
     def get_active_connections(self) -> List[Connection]:
-        return [conn for conn in self.connections.values() if conn.status == "connected"]
+        return list(self.connections.values())
 
     def get_connection(self, peer_id: str) -> Optional[Connection]:
         return self.connections.get(peer_id)
