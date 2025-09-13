@@ -465,8 +465,9 @@ class ConnectionManager:
             else:
                 ws_url = tunnel_url
             
-            # Add /ws path if not present
-            if not ws_url.endswith('/ws'):
+            # Try different WebSocket paths for different tunnel services
+            if not ws_url.endswith(('/ws', '/websocket', '/socket.io')):
+                # Try /ws first (most common)
                 ws_url = ws_url.rstrip('/') + '/ws'
             
             # Run WebSocket connection in new thread
@@ -498,26 +499,42 @@ class ConnectionManager:
             if not contact or not current_user:
                 return
             
-            # Try SSL connection first (for wss://)
-            if ws_url.startswith('wss://'):
+            # Try multiple WebSocket paths
+            paths_to_try = ['/ws', '/websocket', '/socket.io', '']
+            base_url = ws_url.split('/ws')[0].split('/websocket')[0].split('/socket.io')[0]
+            
+            for path in paths_to_try:
+                test_url = base_url + path
+                print(f"Trying WebSocket path: {test_url}")
+                
+                # Try SSL connection first (for wss://)
+                if test_url.startswith('wss://'):
+                    try:
+                        # Create SSL context that doesn't verify certificates for tunnel connections
+                        ssl_context = ssl.create_default_context()
+                        ssl_context.check_hostname = False
+                        ssl_context.verify_mode = ssl.CERT_NONE
+                        
+                        async with websockets.connect(test_url, ssl=ssl_context, timeout=10) as websocket:
+                            print(f"✅ Connected via SSL WebSocket: {test_url}")
+                            await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
+                            return
+                    except Exception as e:
+                        print(f"SSL WebSocket failed for {test_url}: {e}")
+                        # Try non-SSL version
+                        test_url = test_url.replace('wss://', 'ws://')
+                
+                # Non-SSL connection (for ws://)
                 try:
-                    # Create SSL context that doesn't verify certificates for tunnel connections
-                    ssl_context = ssl.create_default_context()
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
-                    
-                    async with websockets.connect(ws_url, ssl=ssl_context) as websocket:
+                    async with websockets.connect(test_url, timeout=10) as websocket:
+                        print(f"✅ Connected via WebSocket: {test_url}")
                         await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
                         return
                 except Exception as e:
-                    print(f"SSL WebSocket connection failed: {e}")
-                    print("Trying non-SSL connection...")
-                    # Fallback to non-SSL
-                    ws_url = ws_url.replace('wss://', 'ws://')
+                    print(f"WebSocket failed for {test_url}: {e}")
+                    continue
             
-            # Non-SSL connection (for ws://)
-            async with websockets.connect(ws_url) as websocket:
-                await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
+            print("❌ All WebSocket connection attempts failed")
                 
         except Exception as e:
             print(f"WebSocket connection error: {e}")
