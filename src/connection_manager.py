@@ -9,6 +9,7 @@ import websockets
 import ssl
 import urllib.parse
 import aiohttp
+import requests
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from .models import Connection, Contact, User
@@ -357,11 +358,6 @@ class ConnectionManager:
     def _connect_via_tunnel(self, peer_id: str, contact: Contact, current_user: User) -> bool:
         """Connect to peer via tunnel"""
         try:
-            # Use HTTP POST to tunnel endpoint to establish connection
-            tunnel_url = contact.tunnel_url
-            if not tunnel_url:
-                return False
-                
             # Prepare handshake data
             handshake = {
                 'user_id': current_user.user_id,
@@ -394,93 +390,156 @@ class ConnectionManager:
             return False
 
     async def _async_tunnel_connect(self, peer_id: str, contact: Contact, handshake: dict) -> bool:
-        """Establish connection via HTTP tunnel using aiohttp"""
+        """Establish connection via HTTP tunnel using proper WebSocket upgrade"""
         try:
             tunnel_url = contact.tunnel_url.rstrip('/')
             
-            # Create session with proper SSL handling
+            # For localtunnel, we need to use the HTTP endpoint and upgrade to WebSocket
+            # Don't convert to wss:// - keep it as https:// and let the WebSocket library handle the upgrade
+            
+            print(f"Connecting to tunnel: {tunnel_url}")
+            
+            # Use websockets library with proper headers for localtunnel
+            extra_headers = {
+                'User-Agent': 'WhisperLink/1.0',
+                'Origin': 'https://localhost:3000'
+            }
+            
+            try:
+                # Connect using websockets library which handles the HTTP->WebSocket upgrade properly
+                import websockets
+                
+                # Use the HTTPS URL but let websockets handle the protocol upgrade
+                ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
+                
+                # Create SSL context that's more permissive for tunnel connections
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                
+                async with websockets.connect(
+                    ws_url, 
+                    ssl=ssl_context,
+                    extra_headers=extra_headers,
+                    timeout=30
+                ) as websocket:
+                    print(f"✅ Connected to tunnel WebSocket: {ws_url}")
+                    
+                    # Send handshake
+                    await websocket.send(json.dumps(handshake))
+                    
+                    # Receive handshake response
+                    response_data = await websocket.recv()
+                    response = json.loads(response_data)
+                    
+                    if response.get('status') == 'accepted':
+                        # Create connection object
+                        connection = Connection(
+                            peer_id=peer_id,
+                            peer_username=contact.username,
+                            connection_type="tunnel",
+                            address="tunnel",
+                            port=0,
+                            status="connected",
+                            established_at=datetime.now().isoformat(),
+                            websocket_obj=websocket
+                        )
+                        self.connections[peer_id] = connection
+                        
+                        # Update contact last seen
+                        self.contact_manager.update_contact_last_seen(peer_id)
+                        
+                        print(f"Successfully connected to {contact.username} via tunnel")
+                        
+                        # Handle messages in background task
+                        asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
+                        
+                        return True
+                        
+                    return False
+                    
+            except Exception as e:
+                print(f"Direct WebSocket connection failed: {e}")
+                
+                # Fallback: Try HTTP polling method
+                return await self._try_http_polling_connection(peer_id, contact, handshake, tunnel_url)
+                    
+        except Exception as e:
+            print(f"Tunnel connection error: {e}")
+            return False
+
+    async def _try_http_polling_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str) -> bool:
+        """Fallback HTTP polling connection for when WebSocket upgrade fails"""
+        try:
             connector = aiohttp.TCPConnector(ssl=False)
             timeout = aiohttp.ClientTimeout(total=30)
             
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
-                # First, try to establish WebSocket connection via tunnel
-                try:
-                    # Convert https to wss for WebSocket
-                    ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
-                    
-                    print(f"Connecting to tunnel WebSocket: {ws_url}")
-                    
-                    # Create WebSocket connection
-                    ws = await session.ws_connect(ws_url, ssl=False)
-                    
-                    # Send handshake
-                    await ws.send_str(json.dumps(handshake))
-                    
-                    # Receive handshake response
-                    response_msg = await ws.receive()
-                    if response_msg.type == aiohttp.WSMsgType.TEXT:
-                        response = json.loads(response_msg.data)
-                        if response.get('status') == 'accepted':
-                            # Create connection object
+                # Try HTTP connection with polling
+                async with session.post(f"{tunnel_url}/connect", json=handshake) as response:
+                    if response.status == 200:
+                        response_data = await response.json()
+                        if response_data.get('status') == 'accepted':
+                            # Create HTTP polling connection
                             connection = Connection(
                                 peer_id=peer_id,
                                 peer_username=contact.username,
-                                connection_type="tunnel",
+                                connection_type="tunnel_http_polling",
                                 address="tunnel",
                                 port=0,
                                 status="connected",
                                 established_at=datetime.now().isoformat(),
-                                websocket_obj=ws
+                                socket_obj=session  # Store session for HTTP requests
                             )
                             self.connections[peer_id] = connection
                             
-                            # Update contact last seen
-                            self.contact_manager.update_contact_last_seen(peer_id)
-                            
-                            print(f"Successfully connected to {contact.username} via tunnel")
-                            
-                            # Handle messages in background task
-                            asyncio.create_task(self._handle_websocket_messages(peer_id, ws))
-                            
+                            print(f"Successfully connected to {contact.username} via HTTP polling")
                             return True
-                    
-                    await ws.close()
-                    return False
-                    
-                except Exception as e:
-                    print(f"WebSocket tunnel connection failed: {e}")
-                    
-                    # Fallback: try HTTP connection
-                    try:
-                        # Send handshake via HTTP POST
-                        async with session.post(f"{tunnel_url}/connect", json=handshake) as response:
-                            if response.status == 200:
-                                response_data = await response.json()
-                                if response_data.get('status') == 'accepted':
-                                    # Create a mock connection for HTTP-based tunnel
-                                    connection = Connection(
-                                        peer_id=peer_id,
-                                        peer_username=contact.username,
-                                        connection_type="tunnel_http",
-                                        address="tunnel",
-                                        port=0,
-                                        status="connected",
-                                        established_at=datetime.now().isoformat(),
-                                        socket_obj=None  # Will use HTTP for messages
-                                    )
-                                    self.connections[peer_id] = connection
-                                    
-                                    print(f"Successfully connected to {contact.username} via HTTP tunnel")
-                                    return True
-                                    
-                    except Exception as http_e:
-                        print(f"HTTP tunnel connection also failed: {http_e}")
-                        
-                return False
-                
-        except Exception as e:
-            print(f"Tunnel connection error: {e}")
+                            
             return False
+            
+        except Exception as e:
+            print(f"HTTP polling connection failed: {e}")
+            return False
+
+    async def _handle_websocket_messages_native(self, peer_id: str, websocket):
+        """Handle messages from native WebSocket connection"""
+        try:
+            async for message in websocket:
+                try:
+                    message_data = json.loads(message)
+                    message_type = message_data.get('type')
+                    
+                    if message_type == 'chat':
+                        encrypted_message = message_data.get('message')
+                        timestamp = message_data.get('timestamp')
+                        
+                        # Decrypt message
+                        current_user = self.user_manager.get_current_user()
+                        contact = self.contact_manager.get_contact(peer_id)
+                        
+                        if current_user and contact:
+                            crypto = CryptoManager()
+                            decrypted_message = crypto.decrypt_message(
+                                current_user.private_key,
+                                contact.public_key,
+                                encrypted_message
+                            )
+                            
+                            # Call message handlers
+                            for handler in self.message_handlers:
+                                handler(peer_id, contact.username, decrypted_message, timestamp)
+                                
+                except json.JSONDecodeError:
+                    continue
+                    
+        except Exception as e:
+            print(f"Error handling WebSocket messages from {peer_id}: {e}")
+        finally:
+            # Connection closed
+            if peer_id in self.connections:
+                self.connections[peer_id].status = "disconnected"
+                del self.connections[peer_id]
 
     def _handle_peer_messages(self, peer_id: str):
         """Handle messages from a connected peer"""
@@ -612,8 +671,8 @@ class ConnectionManager:
                 # Socket connection
                 connection.socket_obj.send(json.dumps(message_data).encode())
                 return True
-            elif connection.connection_type == "tunnel_http":
-                # HTTP tunnel connection
+            elif connection.connection_type == "tunnel_http_polling":
+                # HTTP polling connection
                 return self._send_http_message(peer_id, message_data)
             else:
                 return False
@@ -625,7 +684,12 @@ class ConnectionManager:
     async def _send_websocket_message(self, websocket, message_data):
         """Send message via WebSocket"""
         try:
-            await websocket.send_str(json.dumps(message_data))
+            if hasattr(websocket, 'send_str'):
+                # aiohttp WebSocket
+                await websocket.send_str(json.dumps(message_data))
+            else:
+                # native websockets WebSocket
+                await websocket.send(json.dumps(message_data))
         except Exception as e:
             print(f"Failed to send WebSocket message: {e}")
 
@@ -636,7 +700,6 @@ class ConnectionManager:
             if not contact or not contact.tunnel_url:
                 return False
                 
-            import requests
             response = requests.post(
                 f"{contact.tunnel_url}/message",
                 json=message_data,
