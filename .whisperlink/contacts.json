@@ -18,5 +18,15 @@
     "tunnel_url": "https://33c1b228.loca.lt/",
     "added_at": "2025-09-13T13:46:36.420100",
     "last_seen": null
+  },
+  "6b57fc8e119548b1ad49028b1928d69c": {
+    "user_id": "6b57fc8e119548b1ad49028b1928d69c",
+    "username": "lordnniky",
+    "public_key": "8cf451181c1484f35a157ff4e2518a39a564531a62d44f537719e70f126fab21",
+    "connection_type": "tunnel",
+    "address": null,
+    "tunnel_url": "https://8765b539.loca.lt/",
+    "added_at": "2025-09-13T14:06:35.413544",
+    "last_seen": null
   }
 }

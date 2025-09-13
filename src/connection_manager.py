@@ -29,12 +29,18 @@ class TunnelManager:
         try:
             # Start WebSocket bridge if not running
             if not self.ws_bridge_running:
+                print(f"Starting WebSocket bridge for port {local_port}")
                 self._start_websocket_bridge(local_port)
             
             # Try to use localtunnel if available
+            print(f"Attempting to create tunnel for port {self.ws_bridge_port}")
             result = subprocess.run([
                 'npx', 'localtunnel', '--port', str(self.ws_bridge_port)
-            ], capture_output=True, text=True, timeout=10)
+            ], capture_output=True, text=True, timeout=15)
+            
+            print(f"Localtunnel result: {result.returncode}")
+            print(f"Localtunnel stdout: {result.stdout}")
+            print(f"Localtunnel stderr: {result.stderr}")
             
             if result.returncode == 0:
                 # Parse tunnel URL from output
@@ -43,15 +49,18 @@ class TunnelManager:
                     if 'https://' in line:
                         tunnel_url = line.strip()
                         self.active_tunnels[local_port] = tunnel_url
+                        print(f"✅ Real tunnel created: {tunnel_url}")
                         return tunnel_url
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"Localtunnel failed: {e}")
         
         # Fallback: simulate tunnel creation
         tunnel_id = uuid.uuid4().hex[:8]
         tunnel_url = f"https://{tunnel_id}.loca.lt"
         self.active_tunnels[local_port] = tunnel_url
-        print(f"Simulated tunnel created: {tunnel_url} -> localhost:{self.ws_bridge_port}")
+        print(f"⚠️ Simulated tunnel created: {tunnel_url} -> localhost:{self.ws_bridge_port}")
+        print("Note: This is a simulated tunnel. For real connections, install localtunnel:")
+        print("npm install -g localtunnel")
         return tunnel_url
     
     def _start_websocket_bridge(self, tcp_port: int):
@@ -94,8 +103,8 @@ class TunnelManager:
                     print(f"Bridge error: {e}")
             
             async def main():
-                print(f"WebSocket bridge listening on 127.0.0.1:{self.ws_bridge_port} -> 127.0.0.1:{tcp_port}")
-                async with websockets.serve(handle_ws_client, '127.0.0.1', self.ws_bridge_port):
+                print(f"WebSocket bridge listening on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{tcp_port}")
+                async with websockets.serve(handle_ws_client, '0.0.0.0', self.ws_bridge_port):
                     self.ws_bridge_running = True
                     await asyncio.Future()  # run forever
             
@@ -515,7 +524,7 @@ class ConnectionManager:
                         ssl_context.check_hostname = False
                         ssl_context.verify_mode = ssl.CERT_NONE
                         
-                        async with websockets.connect(test_url, ssl=ssl_context, timeout=10) as websocket:
+                        async with websockets.connect(test_url, ssl=ssl_context) as websocket:
                             print(f"✅ Connected via SSL WebSocket: {test_url}")
                             await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
                             return
@@ -526,7 +535,7 @@ class ConnectionManager:
                 
                 # Non-SSL connection (for ws://)
                 try:
-                    async with websockets.connect(test_url, timeout=10) as websocket:
+                    async with websockets.connect(test_url) as websocket:
                         print(f"✅ Connected via WebSocket: {test_url}")
                         await self._handle_websocket_connection(peer_id, websocket, contact, current_user)
                         return
