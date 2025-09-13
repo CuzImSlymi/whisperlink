@@ -11,6 +11,7 @@ import urllib.parse
 import aiohttp
 import requests
 import time
+import http # <-- Added import
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
 from .models import Connection, Contact, User
@@ -47,8 +48,9 @@ class TunnelManager:
         try:
             print("Starting ngrok tunnel...")
             self._kill_existing_ngrok()
+            # Added --host-header=rewrite for better compatibility
             self.ngrok_process = subprocess.Popen([
-                'ngrok', 'http', str(self.ws_bridge_port), '--log=stdout'
+                'ngrok', 'http', str(self.ws_bridge_port), '--log=stdout', '--host-header=rewrite'
             ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
             print("Waiting for ngrok to establish tunnel...")
@@ -175,12 +177,22 @@ class TunnelManager:
                         print(f"Bridge connection error: {e}")
 
                 async def start_server(self):
+                    # --- START FIX ---
+                    # Health check to respond to ngrok's HTTP probes.
+                    # If the request isn't for a WebSocket, respond with HTTP 200 OK.
+                    async def health_check(path, request_headers):
+                        if "Upgrade" not in request_headers or request_headers["Upgrade"].lower() != "websocket":
+                            return http.HTTPStatus.OK, [("Content-Type", "text/plain")], b"OK"
+                        return None # Let websockets library handle the handshake
+                    # --- END FIX ---
+
                     print(f"Starting WebSocket bridge on 0.0.0.0:{self.ws_bridge_port} -> 127.0.0.1:{self.tcp_port}")
                     try:
                         server = await websockets.serve(
                             self.handle_websocket,
                             '0.0.0.0',
                             self.ws_bridge_port,
+                            process_request=health_check, # <-- Added handler for ngrok
                             ping_interval=30,
                             ping_timeout=15,
                             max_size=1048576,
