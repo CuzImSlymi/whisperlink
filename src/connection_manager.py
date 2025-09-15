@@ -185,8 +185,6 @@ class TunnelManager:
             
             async def websocket_handler(request):
                 ws = web.WebSocketResponse()
-                if not ws.can_prepare(request):
-                    return web.Response(text="OK")  # Respond to ngrok health checks
                 await ws.prepare(request)
                 
                 try:
@@ -202,31 +200,44 @@ class TunnelManager:
                                 elif msg.type == WSMsgType.ERROR:
                                     break
                         finally:
-                            if not writer.is_closing(): writer.close()
+                            if not writer.is_closing(): 
+                                writer.close()
                     
                     async def tcp_to_ws():
                         try:
                             while not reader.at_eof():
                                 data = await reader.read(4096)
-                                if not data: break
+                                if not data: 
+                                    break
                                 await ws.send_bytes(data)
                         finally:
-                            if not ws.closed: await ws.close()
+                            if not ws.closed: 
+                                await ws.close()
                     
                     done, pending = await asyncio.wait(
                         [asyncio.create_task(ws_to_tcp()), asyncio.create_task(tcp_to_ws())],
                         return_when=asyncio.FIRST_COMPLETED
                     )
-                    for task in pending: task.cancel()
-                except Exception: pass
+                    for task in pending: 
+                        task.cancel()
+                        
+                except Exception as e:
+                    print(f"WebSocket bridge error: {e}")
                 finally:
-                    if not ws.closed: await ws.close()
+                    if not ws.closed: 
+                        await ws.close()
                 
                 return ws
             
+            # Add a simple health check endpoint for ngrok
+            async def health_check(request):
+                return web.Response(text="OK")
+            
             async def start_server():
                 app = web.Application()
-                app.router.add_route('GET', '/', websocket_handler)
+                app.router.add_get('/', websocket_handler)  # WebSocket endpoint
+                app.router.add_get('/health', health_check)  # Health check endpoint
+                
                 runner = web.AppRunner(app)
                 await runner.setup()
                 site = web.TCPSite(runner, '0.0.0.0', self.ws_bridge_port)
@@ -256,7 +267,8 @@ class TunnelManager:
                         print(f"✅ WebSocket bridge verified running on port {self.ws_bridge_port}")
                         self.ws_bridge_running = True
                         return True
-            except Exception: pass
+            except Exception: 
+                pass
             time.sleep(2)
         
         print("❌ WebSocket bridge failed to start")
