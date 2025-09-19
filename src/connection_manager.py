@@ -169,7 +169,7 @@ class TunnelManager:
     def _test_tunnel_connectivity(self, tunnel_url: str) -> bool:
         try:
             print("Testing tunnel connectivity...")
-            response = requests.get(tunnel_url, timeout=20)
+            response = requests.get(tunnel_url + '/health', timeout=20)
             print(f"Tunnel test: HTTP {response.status_code}")
             return response.status_code < 599  # Any HTTP response is a sign of life
         except Exception as e:
@@ -231,11 +231,32 @@ class TunnelManager:
             
             # Add a simple health check endpoint for ngrok
             async def health_check(request):
-                return web.Response(text="OK")
+                return web.Response(text="WhisperLink Bridge OK")
+            
+            # Add a root handler that returns basic info for regular HTTP requests
+            async def root_handler(request):
+                # Check if this is a WebSocket upgrade request
+                if request.headers.get('Upgrade', '').lower() == 'websocket':
+                    return await websocket_handler(request)
+                else:
+                    # Return a simple HTML page for regular HTTP requests
+                    html = """
+                    <html>
+                    <head><title>WhisperLink Bridge</title></head>
+                    <body>
+                        <h1>WhisperLink WebSocket Bridge</h1>
+                        <p>This is a WebSocket bridge endpoint.</p>
+                        <p>Connect using a WebSocket client to establish a connection.</p>
+                    </body>
+                    </html>
+                    """
+                    return web.Response(text=html, content_type='text/html')
             
             async def start_server():
                 app = web.Application()
-                app.router.add_get('/', websocket_handler)  # WebSocket endpoint
+                # Use root_handler for both WebSocket and regular HTTP requests at root
+                app.router.add_get('/', root_handler)
+                app.router.add_get('/ws', websocket_handler)  # Alternative WebSocket endpoint
                 app.router.add_get('/health', health_check)  # Health check endpoint
                 
                 runner = web.AppRunner(app)
@@ -527,48 +548,84 @@ class ConnectionManager:
     async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
         import websockets  # Use websockets for the client side
         
-        ws_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
-        headers = {'User-Agent': 'WhisperLink/1.0', 'Origin': tunnel_url}
-        ssl_context = None
+        # Convert the tunnel URL to a WebSocket URL
+        # Try both root path and /ws path
+        ws_base_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
-        if ws_url.startswith('wss://'):
+        # Headers to help with ngrok and other proxies
+        headers = {
+            'User-Agent': 'WhisperLink/1.0',
+            'Origin': tunnel_url,
+            'Upgrade': 'websocket',
+            'Connection': 'Upgrade'
+        }
+        
+        ssl_context = None
+        if ws_base_url.startswith('wss://'):
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
         
-        print(f"Attempting WebSocket connection to: {ws_url}")
+        # Try connecting to the root path first, then /ws if that fails
+        for ws_path in ['', '/ws']:
+            ws_url = ws_base_url + ws_path
+            print(f"Attempting WebSocket connection to: {ws_url}")
+            
+            try:
+                websocket = await asyncio.wait_for(websockets.connect(
+                    ws_url, 
+                    additional_headers=headers,  # Use additional_headers for websockets v12+
+                    ssl=ssl_context, 
+                    open_timeout=20,
+                    ping_interval=30,  # Keep connection alive
+                    ping_timeout=10
+                ), timeout=25.0)
+                
+                # Send handshake
+                await websocket.send(json.dumps(handshake))
+                
+                # Wait for response
+                response_data = await asyncio.wait_for(websocket.recv(), timeout=15.0)
+                response = json.loads(response_data)
+                
+                if response.get('status') == 'accepted':
+                    connection = Connection(
+                        peer_id=peer_id, 
+                        peer_username=contact.username,
+                        connection_type="tunnel_websocket", 
+                        address="tunnel", 
+                        port=0,
+                        status="connected", 
+                        established_at=datetime.now().isoformat(),
+                        websocket_obj=websocket
+                    )
+                    
+                    self.connections[peer_id] = connection
+                    self.contact_manager.update_contact_last_seen(peer_id)
+                    
+                    print(f"✅ Successfully connected to {contact.username} via tunnel")
+                    
+                    # Start message handler
+                    asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
+                    return True
+                else:
+                    await websocket.close()
+                    print("❌ Handshake rejected by peer")
+                    return False
+                    
+            except asyncio.TimeoutError:
+                print(f"❌ Connection timeout for {ws_url}")
+                continue
+            except Exception as e:
+                if 'HTTP 404' in str(e):
+                    print(f"❌ Path {ws_path} not found, trying next...")
+                    continue
+                else:
+                    print(f"❌ WebSocket connection failed for {ws_url}: {e}")
+                    continue
         
-        try:
-            websocket = await asyncio.wait_for(websockets.connect(
-                ws_url, additional_headers=headers, ssl=ssl_context, open_timeout=20
-            ), timeout=25.0)
-            
-            await websocket.send(json.dumps(handshake))
-            response_data = await asyncio.wait_for(websocket.recv(), timeout=15.0)
-            response = json.loads(response_data)
-            
-            if response.get('status') == 'accepted':
-                connection = Connection(
-                    peer_id=peer_id, peer_username=contact.username,
-                    connection_type="tunnel_websocket", address="tunnel", port=0,
-                    status="connected", established_at=datetime.now().isoformat(),
-                    websocket_obj=websocket
-                )
-                
-                self.connections[peer_id] = connection
-                self.contact_manager.update_contact_last_seen(peer_id)
-                
-                print(f"✅ Successfully connected to {contact.username} via tunnel")
-                asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
-                return True
-            else:
-                await websocket.close()
-                print("❌ Handshake rejected by peer")
-                return False
-                
-        except Exception as e:
-            print(f"❌ WebSocket connection failed: {e}")
-            return False
+        print("❌ All WebSocket connection attempts failed")
+        return False
     
     def _handle_peer_messages(self, peer_id: str):
         connection = self.connections.get(peer_id)
