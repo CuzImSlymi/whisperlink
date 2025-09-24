@@ -387,6 +387,17 @@ class ConnectionManager:
             if not all([peer_id, peer_username, peer_public_key]):
                 client_socket.close()
                 return
+
+            # If the connecting user is not a contact, add them. This is crucial for message exchange.
+            if not self.contact_manager.get_contact(peer_id):
+                print(f"Received connection from new peer '{peer_username}'. Adding to contacts.")
+                self.contact_manager.add_contact(
+                    user_id=peer_id,
+                    username=peer_username,
+                    public_key=peer_public_key,
+                    connection_type="direct", # Assume direct, as we don't have tunnel info
+                    address=f"{client_address[0]}:{client_address[1]}"
+                )
             
             current_user = self.user_manager.get_current_user()
             if not current_user:
@@ -416,7 +427,14 @@ class ConnectionManager:
             self.contact_manager.update_contact_last_seen(peer_id)
             
             print(f"\n✅ Incoming connection established with {peer_username}")
-            self._handle_peer_messages(peer_id)
+            
+            # Start a dedicated thread for handling messages, mirroring the outgoing connection logic
+            message_thread = threading.Thread(
+                target=self._handle_peer_messages,
+                args=(peer_id,),
+                daemon=True
+            )
+            message_thread.start()
         
         except Exception as e:
             print(f"Error handling incoming connection: {e}")
@@ -549,15 +567,12 @@ class ConnectionManager:
         import websockets  # Use websockets for the client side
         
         # Convert the tunnel URL to a WebSocket URL
-        # Try both root path and /ws path
         ws_base_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
         
         # Headers to help with ngrok and other proxies
         headers = {
             'User-Agent': 'WhisperLink/1.0',
-            'Origin': tunnel_url,
-            'Upgrade': 'websocket',
-            'Connection': 'Upgrade'
+            'ngrok-skip-browser-warning': 'true' # Add this to bypass ngrok's interstitial page
         }
         
         ssl_context = None
@@ -566,15 +581,15 @@ class ConnectionManager:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
         
-        # Try connecting to the root path first, then /ws if that fails
-        for ws_path in ['', '/ws']:
+        # Try connecting to the /ws path first, then fall back to the root path.
+        for ws_path in ['/ws', '']:
             ws_url = ws_base_url + ws_path
             print(f"Attempting WebSocket connection to: {ws_url}")
             
             try:
                 websocket = await asyncio.wait_for(websockets.connect(
                     ws_url, 
-                    additional_headers=headers,  # Use additional_headers for websockets v12+
+                    additional_headers=headers,
                     ssl=ssl_context, 
                     open_timeout=20,
                     ping_interval=30,  # Keep connection alive
@@ -607,22 +622,23 @@ class ConnectionManager:
                     
                     # Start message handler
                     asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
-                    return True
+                    return True # Success, exit the function
                 else:
                     await websocket.close()
                     print("❌ Handshake rejected by peer")
-                    return False
+                    return False # Handshake failed, no need to try other paths
                     
             except asyncio.TimeoutError:
                 print(f"❌ Connection timeout for {ws_url}")
-                continue
+                continue # Try the next path
             except Exception as e:
+                # If it's a 404, specifically mention it and try the next path.
                 if 'HTTP 404' in str(e):
-                    print(f"❌ Path {ws_path} not found, trying next...")
+                    print(f"❌ Path not found at {ws_url}, trying fallback...")
                     continue
                 else:
                     print(f"❌ WebSocket connection failed for {ws_url}: {e}")
-                    continue
+                    continue # Try the next path for other errors too
         
         print("❌ All WebSocket connection attempts failed")
         return False
