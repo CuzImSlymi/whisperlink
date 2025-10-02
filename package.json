@@ -6,7 +6,7 @@
   "homepage": "./",
   "scripts": {
     "electron": "electron .",
-    "electron-dev": "ELECTRON_IS_DEV=true electron .",
+    "electron-dev": "cross-env ELECTRON_IS_DEV=true electron .",
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
@@ -20,17 +20,18 @@
     "@emotion/styled": "^11.11.0",
     "@mui/icons-material": "^5.14.16",
     "@mui/material": "^5.14.17",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "react-scripts": "5.0.1",
     "axios": "^1.6.0",
     "framer-motion": "^10.16.4",
-    "react-router-dom": "^6.18.0"
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.18.0",
+    "react-scripts": "5.0.1"
   },
   "devDependencies": {
+    "concurrently": "^8.2.2",
+    "cross-env": "^10.1.0",
     "electron": "^27.0.4",
     "electron-builder": "^24.6.4",
-    "concurrently": "^8.2.2",
     "wait-on": "^7.2.0"
   },
   "build": {

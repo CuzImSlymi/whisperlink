@@ -50,7 +50,7 @@ function createWindow() {
 // Start Python backend process
 function startPythonBackend() {
   const pythonScript = path.join(__dirname, '../python_bridge.py');
-  pythonProcess = spawn('python3', [pythonScript], {
+  pythonProcess = spawn('python', [pythonScript], {
     stdio: ['pipe', 'pipe', 'pipe']
   });
 
