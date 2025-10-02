@@ -23,7 +23,7 @@ class WhisperLinkBridge:
     def __init__(self):
         self.user_manager = UserManager()
         self.contact_manager = ContactManager()
-        self.connection_manager = ConnectionManager()
+        self.connection_manager = ConnectionManager(self.user_manager, self.contact_manager)
         self.current_user: Optional[User] = None
         
     def handle_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:

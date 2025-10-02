@@ -4,7 +4,7 @@ from typing import Dict, List, Optional
 from datetime import datetime
 from dataclasses import asdict
 
-from .models import Contact
+from models import Contact
 
 class ContactManager:
     """Manages contacts and their connection information"""

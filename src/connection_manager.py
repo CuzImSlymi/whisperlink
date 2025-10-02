@@ -12,10 +12,10 @@ import time
 import http
 from typing import Dict, List, Optional, Tuple
 from datetime import datetime
-from .models import Connection, Contact, User
-from .user_manager import UserManager
-from .contact_manager import ContactManager
-from .crypto_manager import CryptoManager
+from models import Connection, Contact, User
+from user_manager import UserManager
+from contact_manager import ContactManager
+from crypto_manager import CryptoManager
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
 

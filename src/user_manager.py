@@ -4,8 +4,8 @@ from typing import Dict, Optional
 from datetime import datetime
 from dataclasses import asdict
 
-from .models import User
-from .crypto_manager import CryptoManager
+from models import User
+from crypto_manager import CryptoManager
 
 class UserManager:
     """Manages user registration, login, and user data"""
