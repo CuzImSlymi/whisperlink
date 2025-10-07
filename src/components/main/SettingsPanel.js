@@ -29,7 +29,7 @@ import { useApp } from '../../context/AppContext';
 
 const SettingsPanel = () => {
   const { user } = useAuth();
-  const { serverStatus, serverPort, setServerPort, startServer } = useApp();
+  const { serverStatus, serverPort, setServerPort, startServer, stopServer } = useApp();
   const [tempPort, setTempPort] = useState(serverPort);
   const [settings, setSettings] = useState({
     notifications: true,
@@ -50,9 +50,8 @@ const SettingsPanel = () => {
     await startServer(tempPort);
   };
 
-  const handleStopServer = () => {
-    // This would stop the server
-    console.log('Stop server');
+  const handleStopServer = async () => {
+    await stopServer();
   };
 
   return (

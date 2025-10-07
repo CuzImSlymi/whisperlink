@@ -13,7 +13,8 @@
     "eject": "react-scripts eject",
     "electron-pack": "electron-builder",
     "preelectron-pack": "npm run build",
-    "dev": "concurrently \"npm start\" \"wait-on http://localhost:3000 && npm run electron-dev\""
+    "dev": "concurrently --kill-others \"npm start\" \"wait-on http://localhost:3000 && npm run electron-dev\"",
+    "stop": "./stop-server.sh"
   },
   "dependencies": {
     "@emotion/react": "^11.11.1",

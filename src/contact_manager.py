@@ -69,6 +69,11 @@ class ContactManager:
         """Get all contacts"""
         return list(self.contacts.values())
     
+    def get_contacts(self, user_id: str) -> List[Contact]:
+        """Get all contacts for a specific user (for compatibility with bridge)"""
+        # For now, return all contacts since we don't have user-specific contact lists
+        return self.list_contacts()
+    
     def update_contact_last_seen(self, user_id: str):
         """Update last seen time for a contact"""
         if user_id in self.contacts:

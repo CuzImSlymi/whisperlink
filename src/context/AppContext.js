@@ -91,6 +91,27 @@ export const AppProvider = ({ children }) => {
     }
   }, [executeCommand, serverPort]);
 
+  const stopServer = useCallback(async () => {
+    setServerStatus('stopping');
+    
+    try {
+      const result = await executeCommand('stop_server');
+      if (result.success) {
+        setServerStatus('stopped');
+        // Clear all connections when server stops
+        setConnections([]);
+        addNotification('Server stopped successfully', 'info');
+        return { success: true };
+      } else {
+        setServerStatus('running'); // Revert if stop failed
+        return { success: false, error: result.error };
+      }
+    } catch (error) {
+      setServerStatus('running'); // Revert if stop failed
+      return { success: false, error: error.message };
+    }
+  }, [executeCommand]);
+
   const connectToPeer = useCallback(async (peerData) => {
     try {
       const result = await executeCommand('connect_to_peer', peerData);
@@ -228,6 +249,7 @@ export const AppProvider = ({ children }) => {
     removeContact,
     loadContacts,
     startServer,
+    stopServer,
     connectToPeer,
     disconnectPeer,
     sendMessage,

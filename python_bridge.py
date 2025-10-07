@@ -45,6 +45,8 @@ class WhisperLinkBridge:
                 return self._remove_contact(args)
             elif command == 'start_server':
                 return self._start_server(args)
+            elif command == 'stop_server':
+                return self._stop_server(args)
             elif command == 'connect_to_peer':
                 return self._connect_to_peer(args)
             elif command == 'send_message':
@@ -193,6 +195,18 @@ class WhisperLinkBridge:
             # This would be implemented with the actual connection manager
             # For now, return success
             return {'success': True, 'message': f'Server started on port {port}'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+    
+    def _stop_server(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Stop listening server"""
+        if not self.current_user:
+            return {'success': False, 'error': 'Not logged in'}
+        
+        try:
+            # This would be implemented with the actual connection manager
+            # For now, return success
+            return {'success': True, 'message': 'Server stopped successfully'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
     
