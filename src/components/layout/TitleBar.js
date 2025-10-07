@@ -6,26 +6,70 @@ import {
   Close as CloseIcon,
   Lock as LockIcon
 } from '@mui/icons-material';
-import { motion } from 'framer-motion';
+// import { motion } from 'framer-motion';
 
 const TitleBar = () => {
+  // Check if we're in Electron environment
+  const isElectron = window.electronAPI !== undefined;
+
   const handleMinimize = () => {
-    if (window.electronAPI) {
+    if (window.electronAPI && window.electronAPI.minimize) {
       window.electronAPI.minimize();
     }
   };
 
   const handleMaximize = () => {
-    if (window.electronAPI) {
+    if (window.electronAPI && window.electronAPI.maximize) {
       window.electronAPI.maximize();
     }
   };
 
   const handleClose = () => {
-    if (window.electronAPI) {
+    if (window.electronAPI && window.electronAPI.close) {
       window.electronAPI.close();
     }
   };
+
+  // Don't render window controls in web browser
+  if (!isElectron) {
+    return (
+      <Box
+        sx={{
+          height: 40,
+          background: 'linear-gradient(135deg, #0d1117 0%, #21262d 100%)',
+          borderBottom: '1px solid #30363d',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 16px',
+          userSelect: 'none',
+          position: 'relative',
+          zIndex: 1000,
+        }}
+      >
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <LockIcon 
+            sx={{ 
+              color: '#238636', 
+              fontSize: 20,
+              filter: 'drop-shadow(0 0 4px rgba(35, 134, 54, 0.4))'
+            }} 
+          />
+          <Typography
+            variant="body2"
+            sx={{
+              fontWeight: 600,
+              color: '#f0f6fc',
+              fontSize: '0.875rem',
+              letterSpacing: '0.5px',
+            }}
+          >
+            WhisperLink
+          </Typography>
+        </Box>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -45,18 +89,13 @@ const TitleBar = () => {
     >
       {/* Left side - App title */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-        <motion.div
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <LockIcon 
-            sx={{ 
-              color: '#238636', 
-              fontSize: 20,
-              filter: 'drop-shadow(0 0 4px rgba(35, 134, 54, 0.4))'
-            }} 
-          />
-        </motion.div>
+        <LockIcon 
+          sx={{ 
+            color: '#238636', 
+            fontSize: 20,
+            filter: 'drop-shadow(0 0 4px rgba(35, 134, 54, 0.4))'
+          }} 
+        />
         <Typography
           variant="body2"
           sx={{
@@ -81,20 +120,15 @@ const TitleBar = () => {
           gap: 1,
         }}
       >
-        <motion.div
-          animate={{ scale: [1, 1.2, 1] }}
-          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-        >
-          <Box
-            sx={{
-              width: 6,
-              height: 6,
-              borderRadius: '50%',
-              background: '#238636',
-              boxShadow: '0 0 8px rgba(35, 134, 54, 0.6)',
-            }}
-          />
-        </motion.div>
+        <Box
+          sx={{
+            width: 6,
+            height: 6,
+            borderRadius: '50%',
+            background: '#238636',
+            boxShadow: '0 0 8px rgba(35, 134, 54, 0.6)',
+          }}
+        />
         <Typography
           variant="caption"
           sx={{

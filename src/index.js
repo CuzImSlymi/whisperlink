@@ -4,6 +4,9 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
 import App from './App';
 
+// Test if React is loading
+console.log('React index.js loaded successfully');
+
 // Create dark theme with WhisperLink branding
 const darkTheme = createTheme({
   palette: {

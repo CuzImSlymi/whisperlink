@@ -17,7 +17,7 @@ import {
   Lock as LockIcon,
   Security as SecurityIcon
 } from '@mui/icons-material';
-import { motion } from 'framer-motion';
+// import { motion } from 'framer-motion';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
@@ -93,11 +93,7 @@ const LoginScreen = () => {
         }}
       />
       
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, ease: "easeOut" }}
-      >
+      <div>
         <Paper
           elevation={0}
           sx={{
@@ -112,19 +108,14 @@ const LoginScreen = () => {
         >
           {/* Header */}
           <Box sx={{ textAlign: 'center', mb: 4 }}>
-            <motion.div
-              whileHover={{ scale: 1.05 }}
-              transition={{ duration: 0.2 }}
-            >
-              <SecurityIcon
-                sx={{
-                  fontSize: 48,
-                  color: '#238636',
-                  mb: 2,
-                  filter: 'drop-shadow(0 0 12px rgba(35, 134, 54, 0.4))',
-                }}
-              />
-            </motion.div>
+            <SecurityIcon
+              sx={{
+                fontSize: 48,
+                color: '#238636',
+                mb: 2,
+                filter: 'drop-shadow(0 0 12px rgba(35, 134, 54, 0.4))',
+              }}
+            />
             
             <Typography
               variant="h4"
@@ -154,26 +145,20 @@ const LoginScreen = () => {
 
           {/* Error Alert */}
           {displayError && (
-            <motion.div
-              initial={{ opacity: 0, y: -10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.3 }}
-            >
-              <Alert 
-                severity="error" 
-                sx={{ 
-                  mb: 3,
-                  backgroundColor: 'rgba(248, 81, 73, 0.1)',
-                  border: '1px solid rgba(248, 81, 73, 0.3)',
+            <Alert 
+              severity="error" 
+              sx={{ 
+                mb: 3,
+                backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                border: '1px solid rgba(248, 81, 73, 0.3)',
+                color: '#f85149',
+                '& .MuiAlert-icon': {
                   color: '#f85149',
-                  '& .MuiAlert-icon': {
-                    color: '#f85149',
-                  },
-                }}
-              >
-                {displayError}
-              </Alert>
-            </motion.div>
+                },
+              }}
+            >
+              {displayError}
+            </Alert>
           )}
 
           {/* Login Form */}
@@ -225,38 +210,33 @@ const LoginScreen = () => {
               sx={{ mb: 4 }}
             />
 
-            <motion.div
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
+            <Button
+              type="submit"
+              fullWidth
+              variant="contained"
+              disabled={loading}
+              sx={{
+                py: 1.5,
+                fontSize: '1rem',
+                fontWeight: 600,
+                background: 'linear-gradient(135deg, #238636 0%, #2ea043 100%)',
+                boxShadow: '0 4px 12px rgba(35, 134, 54, 0.3)',
+                '&:hover': {
+                  background: 'linear-gradient(135deg, #2ea043 0%, #238636 100%)',
+                  boxShadow: '0 6px 16px rgba(35, 134, 54, 0.4)',
+                },
+                '&:disabled': {
+                  background: '#30363d',
+                  color: '#8b949e',
+                },
+              }}
             >
-              <Button
-                type="submit"
-                fullWidth
-                variant="contained"
-                disabled={loading}
-                sx={{
-                  py: 1.5,
-                  fontSize: '1rem',
-                  fontWeight: 600,
-                  background: 'linear-gradient(135deg, #238636 0%, #2ea043 100%)',
-                  boxShadow: '0 4px 12px rgba(35, 134, 54, 0.3)',
-                  '&:hover': {
-                    background: 'linear-gradient(135deg, #2ea043 0%, #238636 100%)',
-                    boxShadow: '0 6px 16px rgba(35, 134, 54, 0.4)',
-                  },
-                  '&:disabled': {
-                    background: '#30363d',
-                    color: '#8b949e',
-                  },
-                }}
-              >
-                {loading ? (
-                  <CircularProgress size={24} sx={{ color: '#8b949e' }} />
-                ) : (
-                  'Sign In'
-                )}
-              </Button>
-            </motion.div>
+              {loading ? (
+                <CircularProgress size={24} sx={{ color: '#8b949e' }} />
+              ) : (
+                'Sign In'
+              )}
+            </Button>
           </form>
 
           {/* Register Link */}
@@ -276,7 +256,7 @@ const LoginScreen = () => {
             </Typography>
           </Box>
         </Paper>
-      </motion.div>
+      </div>
     </Box>
   );
 };
