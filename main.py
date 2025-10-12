@@ -37,13 +37,13 @@ class WhisperLinkCLI:
     def _handle_received_message(self, peer_id: str, username: str, message: str, timestamp: str):
         """Handle received messages"""
         self.chat_history.append((peer_id, username, message, timestamp))
-        print(f"\n💬 Message from {username}: {message}")
+        print(f"\n[MESSAGE] From {username}: {message}")
         print("Press Enter to continue...")
     
     def start(self):
         """Start the WhisperLink CLI"""
         print("=" * 50)
-        print("🔒 WhisperLink - Secure P2P Messenger")
+        print("[SECURE] WhisperLink - Secure P2P Messenger")
         print("=" * 50)
         print()
         
@@ -98,12 +98,12 @@ class WhisperLinkCLI:
         
         if self.user_manager.login(username, password):
             user = self.user_manager.get_current_user()
-            print(f"✅ Welcome back, {user.username}!")
+            print(f"[SUCCESS] Welcome back, {user.username}!")
             print(f"Your User ID: {user.user_id}")
             print()
             return True
         else:
-            print("❌ Invalid username or password.\n")
+            print("[ERROR] Invalid username or password.\n")
             return False
     
     def _register(self) -> bool:
@@ -118,22 +118,22 @@ class WhisperLinkCLI:
         password_confirm = getpass.getpass("Confirm password: ")
         
         if password != password_confirm:
-            print("❌ Passwords don't match.\n")
+            print("[ERROR] Passwords don't match.\n")
             return False
         
         if len(password) < 8:
-            print("❌ Password must be at least 8 characters long.\n")
+            print("[ERROR] Password must be at least 8 characters long.\n")
             return False
         
         try:
             user_id = self.user_manager.register_user(username, password)
-            print(f"✅ Account created successfully!")
+            print(f"[SUCCESS] Account created successfully!")
             print(f"Your User ID: {user_id}")
             print("Please log in with your credentials.")
             print()
             return False  # Make them log in after registration
         except ValueError as e:
-            print(f"❌ Registration failed: {e}\n")
+            print(f"[ERROR] Registration failed: {e}\n")
             return False
     
     def _show_main_menu(self):
@@ -189,7 +189,7 @@ class WhisperLinkCLI:
             choice = input("Stop listening? (y/n): ").lower()
             if choice == 'y':
                 self.connection_manager.stop_listening()
-                print("✅ Stopped listening for connections.")
+                print("[SUCCESS] Stopped listening for connections.")
             return
         
         print("1. Listen with direct IP (faster, IP visible)")
@@ -201,19 +201,19 @@ class WhisperLinkCLI:
         if choice == "1":
             success, info = self.connection_manager.start_listening(use_tunnel=False)
             if success:
-                print(f"✅ Listening for connections on: {info}")
+                print(f"[SUCCESS] Listening for connections on: {info}")
                 print("Share this address with peers to connect directly.")
             else:
-                print(f"❌ Failed to start listening: {info}")
+                print(f"[ERROR] Failed to start listening: {info}")
         
         elif choice == "2":
             print("Starting tunnel... (this may take a moment)")
             success, info = self.connection_manager.start_listening(use_tunnel=True)
             if success:
-                print(f"✅ Listening for connections via tunnel: {info}")
+                print(f"[SUCCESS] Listening for connections via tunnel: {info}")
                 print("Share this URL with peers to connect securely.")
             else:
-                print(f"❌ Failed to start listening: {info}")
+                print(f"[ERROR] Failed to start listening: {info}")
         
         input("\nPress Enter to continue...")
     
@@ -242,9 +242,9 @@ class WhisperLinkCLI:
                     else:
                         print(f"Connecting to {contact.username}...")
                         if self.connection_manager.connect_to_peer(contact.user_id):
-                            print("✅ Successfully connected!")
+                            print("[SUCCESS] Successfully connected!")
                         else:
-                            print("❌ Failed to connect.")
+                            print("[ERROR] Failed to connect.")
                 elif choice_num == len(contacts) + 1:
                     self._connect_to_new_peer()
             except ValueError:
@@ -276,9 +276,9 @@ class WhisperLinkCLI:
                 
                 print("Connecting...")
                 if self.connection_manager.connect_to_peer(peer_id):
-                    print("✅ Successfully connected!")
+                    print("[SUCCESS] Successfully connected!")
                 else:
-                    print("❌ Failed to connect.")
+                    print("[ERROR] Failed to connect.")
             else:
                 print("Contact already exists.")
         
@@ -289,9 +289,9 @@ class WhisperLinkCLI:
                 print("Contact added.")
                 print("Connecting via tunnel...")
                 if self.connection_manager.connect_to_peer(peer_id):
-                    print("✅ Successfully connected via tunnel!")
+                    print("[SUCCESS] Successfully connected via tunnel!")
                 else:
-                    print("❌ Failed to connect via tunnel.")
+                    print("[ERROR] Failed to connect via tunnel.")
             else:
                 print("Contact already exists.")
     
@@ -348,16 +348,16 @@ class WhisperLinkCLI:
         if conn_choice == "1":
             address = input("IP Address (host:port): ").strip()
             if self.contact_manager.add_contact(user_id, username, public_key, "direct", address):
-                print("✅ Contact added successfully!")
+                print("[SUCCESS] Contact added successfully!")
             else:
-                print("❌ Contact already exists or invalid data.")
+                print("[ERROR] Contact already exists or invalid data.")
         
         elif conn_choice == "2":
             tunnel_url = input("Tunnel URL: ").strip()
             if self.contact_manager.add_contact(user_id, username, public_key, "tunnel", tunnel_url=tunnel_url):
-                print("✅ Contact added successfully!")
+                print("[SUCCESS] Contact added successfully!")
             else:
-                print("❌ Contact already exists or invalid data.")
+                print("[ERROR] Contact already exists or invalid data.")
     
     def _remove_contact_menu(self):
         """Remove contact"""
@@ -377,9 +377,9 @@ class WhisperLinkCLI:
                 confirm = input(f"Remove {contact.username}? (y/n): ").lower()
                 if confirm == 'y':
                     if self.contact_manager.remove_contact(contact.user_id):
-                        print("✅ Contact removed.")
+                        print("[SUCCESS] Contact removed.")
                     else:
-                        print("❌ Failed to remove contact.")
+                        print("[ERROR] Failed to remove contact.")
         except ValueError:
             print("Invalid choice.")
     
@@ -449,7 +449,7 @@ class WhisperLinkCLI:
                     if 1 <= peer_choice <= len(connections):
                         conn = connections[peer_choice - 1]
                         self.connection_manager.disconnect_from_peer(conn.peer_id)
-                        print(f"✅ Disconnected from {conn.peer_username}")
+                        print(f"[SUCCESS] Disconnected from {conn.peer_username}")
                 except ValueError:
                     print("Invalid choice.")
         
@@ -517,7 +517,7 @@ class WhisperLinkCLI:
                         datetime.now().isoformat()
                     ))
                 else:
-                    print("❌ Failed to send message. Connection may be lost.")
+                    print("[ERROR] Failed to send message. Connection may be lost.")
                     
             except KeyboardInterrupt:
                 break
@@ -580,9 +580,9 @@ class WhisperLinkCLI:
                     f.write(f"Public Key: {user.public_key}\n")
                     f.write(f"Generated: {datetime.now().isoformat()}\n")
                 
-                print(f"✅ Public information saved to {filename}")
+                print(f"[SUCCESS] Public information saved to {filename}")
             except Exception as e:
-                print(f"❌ Failed to save file: {e}")
+                print(f"[ERROR] Failed to save file: {e}")
         
         input("\nPress Enter to continue...")
     
@@ -610,7 +610,7 @@ class WhisperLinkCLI:
             # Logout user
             self.user_manager.logout()
             
-            print("✅ Logged out successfully.")
+            print("[SUCCESS] Logged out successfully.")
             
             # Start login flow again
             if not self._login_flow():
@@ -636,7 +636,7 @@ class WhisperLinkCLI:
         for conn in active_connections:
             self.connection_manager.disconnect_from_peer(conn.peer_id)
         
-        print("✅ Cleanup completed.")
+        print("[SUCCESS] Cleanup completed.")
 
 def main():
     """Main entry point for WhisperLink"""

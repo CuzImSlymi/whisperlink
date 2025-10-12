@@ -37,12 +37,12 @@ class TunnelManager:
             if not self.ws_bridge_running:
                 print(f"Starting WebSocket bridge for port {local_port}")
                 if not self._start_websocket_bridge(local_port):
-                    print("❌ Failed to start WebSocket bridge")
+                    print("[ERROR] Failed to start WebSocket bridge")
                     return None
             
             return self._create_ngrok_tunnel(local_port)
         except Exception as e:
-            print(f"❌ Tunnel creation failed: {e}")
+            print(f"[ERROR] Tunnel creation failed: {e}")
             return None
     
     def _create_ngrok_tunnel(self, local_port: int) -> Optional[str]:
@@ -86,7 +86,7 @@ class TunnelManager:
             for attempt in range(8):
                 # Check if the process died prematurely
                 if self.ngrok_process.poll() is not None:
-                    print("❌ ngrok process terminated unexpectedly.")
+                    print("[ERROR] ngrok process terminated unexpectedly.")
                     break
                 
                 try:
@@ -110,17 +110,17 @@ class TunnelManager:
                     time.sleep(2)
             
             if tunnel_url:
-                print(f"✅ ngrok tunnel created: {tunnel_url}")
+                print(f"[SUCCESS] ngrok tunnel created: {tunnel_url}")
                 if self._test_tunnel_connectivity(tunnel_url):
                     self.active_tunnels[local_port] = tunnel_url
                     return tunnel_url
                 else:
-                    print("❌ Tunnel created but is not responding to requests.")
+                    print("[ERROR] Tunnel created but is not responding to requests.")
                     self._kill_existing_ngrok()
                     return None
             else:
                 # This is the failure case. We now print the logs.
-                print("❌ Failed to get tunnel URL from ngrok.")
+                print("[ERROR] Failed to get tunnel URL from ngrok.")
                 if not api_ready:
                     print("  The ngrok API server at http://localhost:4040 did not become available.")
                 else:
@@ -141,11 +141,11 @@ class TunnelManager:
                 return None
                 
         except FileNotFoundError:
-            print("❌ ngrok not found. Please make sure it's installed and in your system's PATH.")
+            print("[ERROR] ngrok not found. Please make sure it's installed and in your system's PATH.")
             print("  Download from https://ngrok.com/download")
             return None
         except Exception as e:
-            print(f"❌ An unexpected error occurred with ngrok: {e}")
+            print(f"[ERROR] An unexpected error occurred with ngrok: {e}")
             self._kill_existing_ngrok()
             return None
     
@@ -265,7 +265,7 @@ class TunnelManager:
                 
                 try:
                     await site.start()
-                    print(f"✅ aiohttp WebSocket bridge running on port {self.ws_bridge_port}")
+                    print(f"[SUCCESS] aiohttp WebSocket bridge running on port {self.ws_bridge_port}")
                     await asyncio.Event().wait()  # Run forever
                 finally:
                     await runner.cleanup()
@@ -285,14 +285,14 @@ class TunnelManager:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                     s.settimeout(1)
                     if s.connect_ex(('127.0.0.1', self.ws_bridge_port)) == 0:
-                        print(f"✅ WebSocket bridge verified running on port {self.ws_bridge_port}")
+                        print(f"[SUCCESS] WebSocket bridge verified running on port {self.ws_bridge_port}")
                         self.ws_bridge_running = True
                         return True
             except Exception: 
                 pass
             time.sleep(2)
         
-        print("❌ WebSocket bridge failed to start")
+        print("[ERROR] WebSocket bridge failed to start")
         return False
     
     def close_tunnel(self, local_port: int):
@@ -342,11 +342,11 @@ class ConnectionManager:
                     connection_info = tunnel_url
                 else:
                     self.stop_listening()
-                    return False, "❌ Failed to create tunnel. Try direct IP connection instead."
+                    return False, "[ERROR] Failed to create tunnel. Try direct IP connection instead."
             
             return True, connection_info
         except Exception as e:
-            return False, f"❌ Failed to start listening: {str(e)}"
+            return False, f"[ERROR] Failed to start listening: {str(e)}"
     
     def stop_listening(self):
         self.listening = False
@@ -426,7 +426,7 @@ class ConnectionManager:
             self.connections[peer_id] = connection
             self.contact_manager.update_contact_last_seen(peer_id)
             
-            print(f"\n✅ Incoming connection established with {peer_username}")
+            print(f"\n[SUCCESS] Incoming connection established with {peer_username}")
             
             # Start a dedicated thread for handling messages, mirroring the outgoing connection logic
             message_thread = threading.Thread(
@@ -460,7 +460,7 @@ class ConnectionManager:
             else:
                 return False
         except Exception as e:
-            print(f"❌ Failed to connect to peer: {e}")
+            print(f"[ERROR] Failed to connect to peer: {e}")
             return False
     
     def _connect_direct(self, peer_id: str, contact: Contact, current_user: User) -> bool:
@@ -504,11 +504,11 @@ class ConnectionManager:
             )
             message_thread.start()
             
-            print(f"✅ Successfully connected to {contact.username}")
+            print(f"[SUCCESS] Successfully connected to {contact.username}")
             return True
         
         except Exception as e:
-            print(f"❌ Direct connection failed: {e}")
+            print(f"[ERROR] Direct connection failed: {e}")
             try:
                 client_socket.close()
             except:
@@ -536,7 +536,7 @@ class ConnectionManager:
                     if result[0]:
                         self.websocket_loop.run_forever()
                 except Exception as e:
-                    print(f"❌ Tunnel connection error: {e}")
+                    print(f"[ERROR] Tunnel connection error: {e}")
                     result[0] = False
                 finally:
                     if self.websocket_loop.is_running():
@@ -551,7 +551,7 @@ class ConnectionManager:
             return result[0]
             
         except Exception as e:
-            print(f"❌ Tunnel connection failed: {e}")
+            print(f"[ERROR] Tunnel connection failed: {e}")
             return False
     
     async def _async_tunnel_connect(self, peer_id: str, contact: Contact, handshake: dict) -> bool:
@@ -560,7 +560,7 @@ class ConnectionManager:
             print(f"Connecting to: {tunnel_url}")
             return await self._try_websocket_connection(peer_id, contact, handshake, tunnel_url)
         except Exception as e:
-            print(f"❌ Tunnel connection error: {e}")
+            print(f"[ERROR] Tunnel connection error: {e}")
             return False
     
     async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
@@ -618,29 +618,29 @@ class ConnectionManager:
                     self.connections[peer_id] = connection
                     self.contact_manager.update_contact_last_seen(peer_id)
                     
-                    print(f"✅ Successfully connected to {contact.username} via tunnel")
+                    print(f"[SUCCESS] Successfully connected to {contact.username} via tunnel")
                     
                     # Start message handler
                     asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
                     return True # Success, exit the function
                 else:
                     await websocket.close()
-                    print("❌ Handshake rejected by peer")
+                    print("[ERROR] Handshake rejected by peer")
                     return False # Handshake failed, no need to try other paths
                     
             except asyncio.TimeoutError:
-                print(f"❌ Connection timeout for {ws_url}")
+                print(f"[ERROR] Connection timeout for {ws_url}")
                 continue # Try the next path
             except Exception as e:
                 # If it's a 404, specifically mention it and try the next path.
                 if 'HTTP 404' in str(e):
-                    print(f"❌ Path not found at {ws_url}, trying fallback...")
+                    print(f"[ERROR] Path not found at {ws_url}, trying fallback...")
                     continue
                 else:
-                    print(f"❌ WebSocket connection failed for {ws_url}: {e}")
+                    print(f"[ERROR] WebSocket connection failed for {ws_url}: {e}")
                     continue # Try the next path for other errors too
         
-        print("❌ All WebSocket connection attempts failed")
+        print("[ERROR] All WebSocket connection attempts failed")
         return False
     
     def _handle_peer_messages(self, peer_id: str):
@@ -713,14 +713,14 @@ class ConnectionManager:
             
             return False
         except Exception as e:
-            print(f"❌ Failed to send message: {e}")
+            print(f"[ERROR] Failed to send message: {e}")
             return False
     
     async def _send_websocket_message(self, websocket, message_data):
         try:
             await websocket.send(json.dumps(message_data))
         except Exception as e:
-            print(f"❌ Failed to send WebSocket message: {e}")
+            print(f"[ERROR] Failed to send WebSocket message: {e}")
     
     def disconnect_from_peer(self, peer_id: str):
         if peer_id in self.connections:

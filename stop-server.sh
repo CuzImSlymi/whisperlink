@@ -17,4 +17,4 @@ lsof -ti:3000 | xargs kill -9 2>/dev/null
 # Force kill any remaining node processes related to this project
 ps aux | grep -E "(whisperlink|WhisperLink)" | grep -v grep | awk '{print $2}' | xargs kill -9 2>/dev/null
 
-echo "✅ All WhisperLink development servers stopped"
+echo "[SUCCESS] All WhisperLink development servers stopped"
