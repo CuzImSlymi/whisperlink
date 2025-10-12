@@ -8,14 +8,20 @@ import ChatArea from './ChatArea';
 import NotificationContainer from '../ui/NotificationContainer';
 
 const MainInterface = () => {
+  const isMacOS = window.electronAPI?.platform === 'darwin';
+  
   return (
     <Box
       sx={{
         height: '100%',
         display: 'flex',
-        background: 'linear-gradient(135deg, #0d1117 0%, #161b22 100%)',
+        background: isMacOS 
+          ? 'rgba(13, 17, 23, 0.95)' 
+          : 'linear-gradient(135deg, #0d1117 0%, #161b22 100%)',
         position: 'relative',
         overflow: 'hidden',
+        backdropFilter: isMacOS ? 'blur(20px)' : 'none',
+        WebkitBackdropFilter: isMacOS ? 'blur(20px)' : 'none',
       }}
     >
       {/* Background decoration */}

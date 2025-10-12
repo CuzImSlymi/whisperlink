@@ -11,6 +11,7 @@ import {
 const TitleBar = () => {
   // Check if we're in Electron environment
   const isElectron = window.electronAPI !== undefined;
+  const isMacOS = window.electronAPI?.platform === 'darwin';
 
   const handleMinimize = () => {
     if (window.electronAPI && window.electronAPI.minimize) {
@@ -71,6 +72,82 @@ const TitleBar = () => {
     );
   }
 
+  // macOS uses native traffic lights, so we style differently
+  if (isMacOS) {
+    return (
+      <Box
+        sx={{
+          height: 52, // Increased height for macOS
+          background: 'rgba(13, 17, 23, 0.95)',
+          backdropFilter: 'blur(20px)',
+          borderBottom: '1px solid rgba(48, 54, 61, 0.3)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: '0 80px', // Space for traffic lights
+          WebkitAppRegion: 'drag',
+          userSelect: 'none',
+          position: 'relative',
+          zIndex: 1000,
+        }}
+      >
+        {/* Center - App title and status */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <LockIcon 
+              sx={{ 
+                color: '#238636', 
+                fontSize: 20,
+                filter: 'drop-shadow(0 0 6px rgba(35, 134, 54, 0.5))'
+              }} 
+            />
+            <Typography
+              variant="body2"
+              sx={{
+                fontWeight: 600,
+                color: '#f0f6fc',
+                fontSize: '0.875rem',
+                letterSpacing: '0.5px',
+              }}
+            >
+              WhisperLink
+            </Typography>
+          </Box>
+          
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1,
+              ml: 3,
+            }}
+          >
+            <Box
+              sx={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                background: '#238636',
+                boxShadow: '0 0 12px rgba(35, 134, 54, 0.7)',
+              }}
+            />
+            <Typography
+              variant="caption"
+              sx={{
+                color: '#8b949e',
+                fontSize: '0.75rem',
+                fontWeight: 500,
+              }}
+            >
+              Secure Connection
+            </Typography>
+          </Box>
+        </Box>
+      </Box>
+    );
+  }
+
+  // Windows/Linux - Custom window controls
   return (
     <Box
       sx={{

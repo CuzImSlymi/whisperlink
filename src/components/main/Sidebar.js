@@ -64,12 +64,13 @@ const Sidebar = () => {
       sx={{
         width: 320,
         height: '100%',
-        background: 'rgba(33, 38, 45, 0.95)',
-        backdropFilter: 'blur(16px)',
-        borderRight: '1px solid #30363d',
+        background: 'rgba(33, 38, 45, 0.98)',
+        backdropFilter: 'blur(20px)',
+        borderRight: '1px solid rgba(48, 54, 61, 0.4)',
         display: 'flex',
         flexDirection: 'column',
         position: 'relative',
+        WebkitBackdropFilter: 'blur(20px)', // Safari support
       }}
     >
       {/* User Header */}

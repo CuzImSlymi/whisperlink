@@ -253,6 +253,9 @@ const ContactList = () => {
                       </Box>
                     </Box>
                   }
+                  secondaryTypographyProps={{
+                    component: 'div'
+                  }}
                 />
 
                 <IconButton

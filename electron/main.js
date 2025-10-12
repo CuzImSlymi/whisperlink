@@ -8,7 +8,7 @@ let pythonProcess;
 
 function createWindow() {
   // Create the browser window with dark theme
-  mainWindow = new BrowserWindow({
+  const windowOptions = {
     width: 1200,
     height: 800,
     minWidth: 800,
@@ -19,11 +19,38 @@ function createWindow() {
       enableRemoteModule: false,
       preload: path.join(__dirname, 'preload.js')
     },
-    titleBarStyle: 'hiddenInset',
     backgroundColor: '#0d1117',
     show: false,
-    icon: path.join(__dirname, '../assets/icon.png')
-  });
+    vibrancy: 'dark', // macOS vibrancy effect
+    transparent: false,
+    titleBarOverlay: false
+  };
+
+  // Platform-specific styling
+  if (process.platform === 'darwin') {
+    // macOS specific settings
+    windowOptions.titleBarStyle = 'hiddenInset';
+    windowOptions.trafficLightPosition = { x: 20, y: 20 };
+    windowOptions.fullscreenable = true;
+    windowOptions.maximizable = true;
+  } else {
+    // Windows/Linux
+    windowOptions.frame = false;
+    windowOptions.titleBarStyle = 'hidden';
+  }
+
+  try {
+    if (process.platform !== 'darwin') {
+      const iconPath = path.join(__dirname, '../assets/icon.png');
+      if (require('fs').existsSync(iconPath)) {
+        windowOptions.icon = iconPath;
+      }
+    }
+  } catch (error) {
+    console.log('Icon file not found, proceeding without icon');
+  }
+
+  mainWindow = new BrowserWindow(windowOptions);
 
   // Load the app
   const startUrl = isDev 
@@ -49,23 +76,79 @@ function createWindow() {
 
 // Start Python backend process
 function startPythonBackend() {
+  // Don't start if already running
+  if (pythonProcess && !pythonProcess.killed && pythonProcess.exitCode === null) {
+    console.log('Python process already running');
+    return;
+  }
+
   const pythonScript = path.join(__dirname, '../python_bridge.py');
-  pythonProcess = spawn('python3', [pythonScript], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    cwd: path.join(__dirname, '..')
-  });
+  
+  // Try python3 first, fallback to python
+  const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+  
+  console.log('Starting Python bridge...');
+  
+  try {
+    pythonProcess = spawn(pythonCmd, [pythonScript], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      cwd: path.join(__dirname, '..')
+    });
 
-  pythonProcess.stdout.on('data', (data) => {
-    console.log(`Python: ${data.toString().trim()}`);
-  });
+    pythonProcess.stdout.on('data', (data) => {
+      const output = data.toString().trim();
+      if (output) {
+        console.log(`Python: ${output}`);
+      }
+    });
 
-  pythonProcess.stderr.on('data', (data) => {
-    console.error(`Python Error: ${data}`);
-  });
+    pythonProcess.stderr.on('data', (data) => {
+      const errorOutput = data.toString().trim();
+      if (errorOutput) {
+        console.error(`Python Error: ${errorOutput}`);
+      }
+    });
 
-  pythonProcess.on('close', (code) => {
-    console.log(`Python process exited with code ${code}`);
-  });
+    pythonProcess.on('close', (code) => {
+      console.log(`Python process exited with code ${code}`);
+      pythonProcess = null;
+    });
+
+    pythonProcess.on('error', (error) => {
+      console.error('Failed to start Python process:', error);
+      pythonProcess = null;
+    });
+
+    // Give the Python process time to initialize
+    setTimeout(() => {
+      if (pythonProcess && !pythonProcess.killed && pythonProcess.exitCode === null) {
+        console.log('Python bridge initialized successfully');
+      } else {
+        console.error('Python bridge failed to initialize');
+      }
+    }, 2000);
+    
+  } catch (error) {
+    console.error('Error spawning Python process:', error);
+    pythonProcess = null;
+  }
+}
+
+// Stop Python backend process
+function stopPythonBackend() {
+  if (pythonProcess && !pythonProcess.killed) {
+    console.log('Stopping Python bridge...');
+    pythonProcess.kill('SIGTERM');
+    
+    // Force kill after 5 seconds if still running
+    setTimeout(() => {
+      if (pythonProcess && !pythonProcess.killed) {
+        console.log('Force killing Python process...');
+        pythonProcess.kill('SIGKILL');
+      }
+    }, 5000);
+  }
+  pythonProcess = null;
 }
 
 // App event handlers
@@ -76,14 +159,16 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
+      // Restart Python bridge if needed when reactivating on macOS
+      if (!pythonProcess || pythonProcess.killed || pythonProcess.exitCode !== null) {
+        startPythonBackend();
+      }
     }
   });
 });
 
 app.on('window-all-closed', () => {
-  if (pythonProcess) {
-    pythonProcess.kill();
-  }
+  stopPythonBackend();
   
   if (process.platform !== 'darwin') {
     app.quit();
@@ -91,12 +176,25 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
-  if (pythonProcess) {
-    pythonProcess.kill();
-  }
+  stopPythonBackend();
 });
 
 // IPC handlers for communication with renderer
+ipcMain.handle('restart-python-bridge', async () => {
+  console.log('Restarting Python bridge...');
+  stopPythonBackend();
+  
+  // Wait a moment before restarting
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  startPythonBackend();
+  
+  // Wait for initialization
+  await new Promise(resolve => setTimeout(resolve, 3000));
+  
+  return { success: true, message: 'Python bridge restarted' };
+});
+
 ipcMain.handle('python-command', async (event, command, args) => {
   return new Promise((resolve, reject) => {
     if (!pythonProcess) {
@@ -104,14 +202,23 @@ ipcMain.handle('python-command', async (event, command, args) => {
       return;
     }
 
+    // Check if process is still alive
+    if (pythonProcess.killed || pythonProcess.exitCode !== null) {
+      reject(new Error('Python process is not running'));
+      return;
+    }
+
     // Send command to Python process
     const message = JSON.stringify({ command, args }) + '\n';
-    pythonProcess.stdin.write(message);
     
     let buffer = '';
+    let timeoutId;
+    let isResolved = false;
     
     // Set up response handler
     const responseHandler = (data) => {
+      if (isResolved) return;
+      
       try {
         buffer += data.toString();
         const lines = buffer.split('\n');
@@ -121,7 +228,8 @@ ipcMain.handle('python-command', async (event, command, args) => {
           if (line && line.startsWith('{')) {
             try {
               const response = JSON.parse(line);
-              pythonProcess.stdout.removeListener('data', responseHandler);
+              cleanup();
+              isResolved = true;
               resolve(response);
               return;
             } catch (parseError) {
@@ -135,18 +243,52 @@ ipcMain.handle('python-command', async (event, command, args) => {
         
       } catch (error) {
         console.error('Python response parse error:', error);
-        pythonProcess.stdout.removeListener('data', responseHandler);
-        reject(error);
+        cleanup();
+        if (!isResolved) {
+          isResolved = true;
+          reject(error);
+        }
       }
     };
-    
-    pythonProcess.stdout.on('data', responseHandler);
-    
-    // Timeout after 10 seconds
-    setTimeout(() => {
+
+    const errorHandler = (error) => {
+      if (isResolved) return;
+      console.error('Python process error:', error);
+      cleanup();
+      isResolved = true;
+      reject(new Error('Python process error: ' + error.message));
+    };
+
+    const cleanup = () => {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       pythonProcess.stdout.removeListener('data', responseHandler);
-      reject(new Error('Python command timeout'));
-    }, 10000);
+      pythonProcess.removeListener('error', errorHandler);
+    };
+    
+    // Set up listeners
+    pythonProcess.stdout.on('data', responseHandler);
+    pythonProcess.on('error', errorHandler);
+    
+    // Send the command
+    try {
+      pythonProcess.stdin.write(message);
+    } catch (writeError) {
+      cleanup();
+      isResolved = true;
+      reject(new Error('Failed to send command to Python process: ' + writeError.message));
+      return;
+    }
+    
+    // Timeout after 15 seconds (increased from 10)
+    timeoutId = setTimeout(() => {
+      if (!isResolved) {
+        cleanup();
+        isResolved = true;
+        reject(new Error('Python command timeout'));
+      }
+    }, 15000);
   });
 });
 

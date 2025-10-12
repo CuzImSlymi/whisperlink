@@ -162,6 +162,7 @@ const EmptyState = () => (
 
 const ChatArea = () => {
   const { activeChat } = useApp();
+  const isMacOS = window.electronAPI?.platform === 'darwin';
 
   return (
     <Box
@@ -169,7 +170,11 @@ const ChatArea = () => {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        background: 'rgba(13, 17, 23, 0.5)',
+        background: isMacOS 
+          ? 'rgba(13, 17, 23, 0.6)' 
+          : 'rgba(13, 17, 23, 0.5)',
+        backdropFilter: isMacOS ? 'blur(10px)' : 'none',
+        WebkitBackdropFilter: isMacOS ? 'blur(10px)' : 'none',
         position: 'relative',
       }}
     >

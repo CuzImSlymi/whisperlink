@@ -17,16 +17,58 @@ import { AppProvider } from './context/AppContext';
 import './App.css';
 
 function AppContent() {
-  const { user, loading, checkAuthStatus } = useAuth();
+  const { user, loading, checkAuthStatus, pingBridge, restartBridge } = useAuth();
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
     const init = async () => {
-      await checkAuthStatus();
+      // Wait for Python bridge to be ready
+      let bridgeReady = false;
+      let attempts = 0;
+      const maxAttempts = 5;
+      let restartAttempted = false;
+      
+      while (!bridgeReady && attempts < maxAttempts) {
+        attempts++;
+        console.log(`Checking bridge readiness (attempt ${attempts}/${maxAttempts})...`);
+        
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        bridgeReady = await pingBridge();
+        
+        if (!bridgeReady) {
+          // Try restarting the bridge once if it's not responding
+          if (!restartAttempted && attempts >= 3) {
+            console.log('Bridge not responding, attempting restart...');
+            restartAttempted = true;
+            const restartSuccess = await restartBridge();
+            
+            if (restartSuccess) {
+              console.log('Bridge restart successful, checking again...');
+              await new Promise(resolve => setTimeout(resolve, 2000));
+              bridgeReady = await pingBridge();
+            }
+          } else if (attempts < maxAttempts) {
+            await new Promise(resolve => setTimeout(resolve, 2000));
+          }
+        }
+      }
+      
+      if (bridgeReady) {
+        console.log('Python bridge is ready, checking auth status...');
+        try {
+          await checkAuthStatus();
+        } catch (error) {
+          console.error('Failed to check auth status during initialization:', error);
+          // Continue initialization even if auth check fails
+        }
+      } else {
+        console.warn('Python bridge not responding after restart attempt, continuing without auth check');
+      }
+      
       setIsInitialized(true);
     };
     init();
-  }, []);
+  }, [checkAuthStatus, pingBridge, restartBridge]);
 
   if (!isInitialized || loading) {
     return (

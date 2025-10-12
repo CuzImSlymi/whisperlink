@@ -22,14 +22,21 @@ from models import User, Contact, Connection
 class WhisperLinkBridge:
     def __init__(self):
         self.user_manager = UserManager()
-        self.contact_manager = ContactManager()
-        self.connection_manager = ConnectionManager(self.user_manager, self.contact_manager)
+        self.contact_manager = None  # Will be created when user logs in
+        self.connection_manager = None  # Will be created when user logs in
         self.current_user: Optional[User] = None
+    
+    def _initialize_user_managers(self, user_id: str):
+        """Initialize user-specific managers"""
+        self.contact_manager = ContactManager(user_id=user_id)
+        self.connection_manager = ConnectionManager(self.user_manager, self.contact_manager)
         
     def handle_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Handle commands from Electron frontend"""
         try:
-            if command == 'register_user':
+            if command == 'ping':
+                return {'success': True, 'message': 'pong'}
+            elif command == 'register_user':
                 return self._register_user(args)
             elif command == 'login_user':
                 return self._login_user(args)
@@ -70,7 +77,27 @@ class WhisperLinkBridge:
         
         try:
             user_id = self.user_manager.register_user(username, password)
-            return {'success': True, 'user_id': user_id}
+            
+            # Automatically log in the new user and initialize their managers
+            success = self.user_manager.login(username, password)
+            if success:
+                self.current_user = self.user_manager.get_current_user()
+                self._initialize_user_managers(user_id)
+                
+                return {
+                    'success': True, 
+                    'user_id': user_id,
+                    'user': {
+                        'user_id': self.current_user.user_id,
+                        'username': self.current_user.username,
+                        'public_key': self.current_user.public_key,
+                        'created_at': self.current_user.created_at,
+                        'last_login': self.current_user.last_login
+                    }
+                }
+            else:
+                return {'success': True, 'user_id': user_id}
+                
         except ValueError as e:
             return {'success': False, 'error': str(e)}
     
@@ -85,6 +112,9 @@ class WhisperLinkBridge:
         success = self.user_manager.login(username, password)
         if success:
             self.current_user = self.user_manager.get_current_user()
+            # Initialize user-specific managers
+            self._initialize_user_managers(self.current_user.user_id)
+            
             return {
                 'success': True, 
                 'user': {
@@ -102,6 +132,9 @@ class WhisperLinkBridge:
         """Logout current user"""
         self.user_manager.logout()
         self.current_user = None
+        # Clear user-specific managers
+        self.contact_manager = None
+        self.connection_manager = None
         return {'success': True}
     
     def _get_current_user(self) -> Dict[str, Any]:
@@ -122,7 +155,7 @@ class WhisperLinkBridge:
     
     def _add_contact(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Add a new contact"""
-        if not self.current_user:
+        if not self.current_user or not self.contact_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         username = args.get('username')
@@ -135,24 +168,32 @@ class WhisperLinkBridge:
             return {'success': False, 'error': 'Username and public key required'}
         
         try:
-            contact_id = self.contact_manager.add_contact(
-                self.current_user.user_id,
+            # Generate a unique contact ID
+            import uuid
+            contact_id = str(uuid.uuid4()).replace('-', '')
+            
+            success = self.contact_manager.add_contact(
+                contact_id,
                 username,
                 public_key,
                 connection_type,
                 address,
                 tunnel_url
             )
-            return {'success': True, 'contact_id': contact_id}
+            
+            if success:
+                return {'success': True, 'contact_id': contact_id}
+            else:
+                return {'success': False, 'error': 'Contact already exists'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
     
     def _get_contacts(self) -> Dict[str, Any]:
         """Get all contacts for current user"""
-        if not self.current_user:
+        if not self.current_user or not self.contact_manager:
             return {'success': False, 'error': 'Not logged in'}
         
-        contacts = self.contact_manager.get_contacts(self.current_user.user_id)
+        contacts = self.contact_manager.list_contacts()
         contact_list = []
         
         for contact in contacts:
@@ -171,7 +212,7 @@ class WhisperLinkBridge:
     
     def _remove_contact(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Remove a contact"""
-        if not self.current_user:
+        if not self.current_user or not self.contact_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         contact_username = args.get('username')
@@ -179,8 +220,11 @@ class WhisperLinkBridge:
             return {'success': False, 'error': 'Contact username required'}
         
         try:
-            self.contact_manager.remove_contact(self.current_user.user_id, contact_username)
-            return {'success': True}
+            success = self.contact_manager.remove_contact_by_username(contact_username)
+            if success:
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Contact not found'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
     

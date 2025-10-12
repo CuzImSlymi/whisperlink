@@ -6,6 +6,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Python backend communication
   executePythonCommand: (command, args) => 
     ipcRenderer.invoke('python-command', command, args),
+  restartPythonBridge: () =>
+    ipcRenderer.invoke('restart-python-bridge'),
   
   // Window controls
   minimize: () => ipcRenderer.invoke('window-minimize'),
