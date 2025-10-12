@@ -21,7 +21,11 @@ import {
   Wifi as NetworkIcon,
   Notifications as NotificationIcon,
   Palette as ThemeIcon,
-  Info as InfoIcon
+  Info as InfoIcon,
+  Link as LinkIcon,
+  ContentCopy as CopyIcon,
+  Add as AddIcon,
+  Close as CloseIcon
 } from '@mui/icons-material';
 import { motion } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
@@ -30,9 +34,21 @@ import ViewPublicKeyDialog from '../dialogs/ViewPublicKeyDialog';
 
 const SettingsPanel = () => {
   const { user } = useAuth();
-  const { serverStatus, serverPort, setServerPort, startServer, stopServer } = useApp();
+  const { 
+    serverStatus, 
+    serverPort, 
+    connectionInfo, 
+    setServerPort, 
+    startServer, 
+    stopServer, 
+    createTunnel, 
+    closeTunnel, 
+    getConnectionInfo 
+  } = useApp();
   const [tempPort, setTempPort] = useState(serverPort);
   const [showPublicKeyDialog, setShowPublicKeyDialog] = useState(false);
+  const [copiedItem, setCopiedItem] = useState(null);
+  const [tunnelLoading, setTunnelLoading] = useState(false);
   const [settings, setSettings] = useState({
     notifications: true,
     autoConnect: false,
@@ -54,6 +70,39 @@ const SettingsPanel = () => {
 
   const handleStopServer = async () => {
     await stopServer();
+  };
+
+  const handleCopyToClipboard = async (text, itemName) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedItem(itemName);
+      setTimeout(() => setCopiedItem(null), 2000);
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+    }
+  };
+
+  const handleCreateTunnel = async () => {
+    setTunnelLoading(true);
+    try {
+      const result = await createTunnel();
+      if (!result.success) {
+        console.error('Failed to create tunnel:', result.error);
+      }
+    } finally {
+      setTunnelLoading(false);
+    }
+  };
+
+  const handleCloseTunnel = async () => {
+    try {
+      const result = await closeTunnel();
+      if (!result.success) {
+        console.error('Failed to close tunnel:', result.error);
+      }
+    } catch (error) {
+      console.error('Error closing tunnel:', error);
+    }
   };
 
   return (
@@ -212,6 +261,173 @@ const SettingsPanel = () => {
             </Alert>
           )}
         </Paper>
+
+        {/* Connection Information */}
+        {serverStatus === 'running' && (
+          <Paper
+            elevation={0}
+            sx={{
+              p: 3,
+              mb: 3,
+              background: 'rgba(13, 17, 23, 0.5)',
+              border: '1px solid #30363d',
+              borderRadius: 2,
+            }}
+          >
+            <Typography variant="h6" sx={{ color: '#f0f6fc', mb: 2, display: 'flex', alignItems: 'center', gap: 1 }}>
+              <LinkIcon fontSize="small" />
+              Connection Information
+            </Typography>
+            
+            <Typography variant="body2" sx={{ color: '#8b949e', mb: 2 }}>
+              Share these URLs with contacts to allow them to connect to you:
+            </Typography>
+
+            {/* Direct IP Connection */}
+            <Box sx={{ mb: 3 }}>
+              <Typography variant="body2" sx={{ color: '#f0f6fc', mb: 1, fontWeight: 500 }}>
+                Direct IP Connection:
+              </Typography>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                <TextField
+                  fullWidth
+                  value={connectionInfo.directIP || `localhost:${serverPort}`}
+                  InputProps={{
+                    readOnly: true,
+                    sx: {
+                      fontFamily: 'monospace',
+                      fontSize: '0.875rem',
+                      color: '#f0f6fc',
+                      backgroundColor: 'rgba(30, 36, 45, 0.5)',
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        borderColor: '#30363d',
+                      },
+                    }
+                  }}
+                  size="small"
+                />
+                <Button
+                  onClick={() => handleCopyToClipboard(connectionInfo.directIP || `localhost:${serverPort}`, 'directIP')}
+                  startIcon={<CopyIcon />}
+                  size="small"
+                  sx={{
+                    color: copiedItem === 'directIP' ? '#238636' : '#58a6ff',
+                    borderColor: copiedItem === 'directIP' ? '#238636' : '#58a6ff',
+                    minWidth: 'auto',
+                    px: 2
+                  }}
+                  variant="outlined"
+                >
+                  {copiedItem === 'directIP' ? 'Copied!' : 'Copy'}
+                </Button>
+              </Box>
+              <Typography variant="caption" sx={{ color: '#8b949e', mt: 0.5, display: 'block' }}>
+                For local network connections only. Not accessible from outside your network.
+              </Typography>
+            </Box>
+
+            {/* Tunnel Connection */}
+            <Box sx={{ mb: 2 }}>
+              <Typography variant="body2" sx={{ color: '#f0f6fc', mb: 1, fontWeight: 500 }}>
+                Tunnel Connection (Public):
+              </Typography>
+              
+              {connectionInfo.tunnelURL ? (
+                <Box>
+                  <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 1 }}>
+                    <TextField
+                      fullWidth
+                      value={connectionInfo.tunnelURL}
+                      InputProps={{
+                        readOnly: true,
+                        sx: {
+                          fontFamily: 'monospace',
+                          fontSize: '0.875rem',
+                          color: '#f0f6fc',
+                          backgroundColor: 'rgba(30, 36, 45, 0.5)',
+                          '& .MuiOutlinedInput-notchedOutline': {
+                            borderColor: '#30363d',
+                          },
+                        }
+                      }}
+                      size="small"
+                    />
+                    <Button
+                      onClick={() => handleCopyToClipboard(connectionInfo.tunnelURL, 'tunnelURL')}
+                      startIcon={<CopyIcon />}
+                      size="small"
+                      sx={{
+                        color: copiedItem === 'tunnelURL' ? '#238636' : '#58a6ff',
+                        borderColor: copiedItem === 'tunnelURL' ? '#238636' : '#58a6ff',
+                        minWidth: 'auto',
+                        px: 2
+                      }}
+                      variant="outlined"
+                    >
+                      {copiedItem === 'tunnelURL' ? 'Copied!' : 'Copy'}
+                    </Button>
+                    <Button
+                      onClick={handleCloseTunnel}
+                      startIcon={<CloseIcon />}
+                      size="small"
+                      sx={{
+                        color: '#f85149',
+                        borderColor: '#f85149',
+                        minWidth: 'auto',
+                        px: 2,
+                        '&:hover': {
+                          borderColor: '#f85149',
+                          backgroundColor: 'rgba(248, 81, 73, 0.1)',
+                        }
+                      }}
+                      variant="outlined"
+                    >
+                      Close
+                    </Button>
+                  </Box>
+                  <Typography variant="caption" sx={{ color: '#8b949e' }}>
+                    Public tunnel - accessible from anywhere on the internet.
+                  </Typography>
+                </Box>
+              ) : (
+                <Box>
+                  <Button
+                    onClick={handleCreateTunnel}
+                    startIcon={<AddIcon />}
+                    disabled={tunnelLoading}
+                    sx={{
+                      color: '#238636',
+                      borderColor: '#238636',
+                      '&:hover': {
+                        borderColor: '#238636',
+                        backgroundColor: 'rgba(35, 134, 54, 0.1)',
+                      },
+                      mb: 1
+                    }}
+                    variant="outlined"
+                    fullWidth
+                  >
+                    {tunnelLoading ? 'Creating Tunnel...' : 'Create Public Tunnel'}
+                  </Button>
+                  <Typography variant="caption" sx={{ color: '#8b949e', display: 'block' }}>
+                    Creates a secure tunnel accessible from anywhere. May take a moment to establish.
+                  </Typography>
+                </Box>
+              )}
+            </Box>
+
+            <Alert 
+              severity="info"
+              sx={{ 
+                backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                border: '1px solid rgba(88, 166, 255, 0.3)',
+                color: '#58a6ff'
+              }}
+            >
+              Share these connection URLs with contacts so they can add and connect to you.
+            </Alert>
+          </Paper>
+        )}
 
         {/* Application Settings */}
         <Paper

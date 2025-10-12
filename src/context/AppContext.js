@@ -21,6 +21,7 @@ export const AppProvider = ({ children }) => {
   const [activeChat, setActiveChat] = useState(null);
   const [serverStatus, setServerStatus] = useState('stopped'); // 'stopped', 'starting', 'running'
   const [serverPort, setServerPort] = useState(9001);
+  const [connectionInfo, setConnectionInfo] = useState({ directIP: null, tunnelURL: null });
   const [notifications, setNotifications] = useState([]);
   const [sidebarTab, setSidebarTab] = useState('chats'); // 'chats', 'contacts', 'settings'
 
@@ -79,6 +80,11 @@ export const AppProvider = ({ children }) => {
       if (result.success) {
         setServerStatus('running');
         setServerPort(port);
+        // Update direct IP connection info
+        setConnectionInfo(prev => ({
+          ...prev,
+          directIP: `localhost:${port}`
+        }));
         addNotification('Server started successfully', 'success');
         return { success: true };
       } else {
@@ -100,6 +106,8 @@ export const AppProvider = ({ children }) => {
         setServerStatus('stopped');
         // Clear all connections when server stops
         setConnections([]);
+        // Clear connection info
+        setConnectionInfo({ directIP: null, tunnelURL: null });
         addNotification('Server stopped successfully', 'info');
         return { success: true };
       } else {
@@ -111,6 +119,67 @@ export const AppProvider = ({ children }) => {
       return { success: false, error: error.message };
     }
   }, [executeCommand]);
+
+  const createTunnel = useCallback(async () => {
+    if (serverStatus !== 'running') {
+      return { success: false, error: 'Server must be running to create tunnel' };
+    }
+
+    try {
+      const result = await executeCommand('create_tunnel', { port: serverPort });
+      if (result.success && result.tunnel_url) {
+        setConnectionInfo(prev => ({
+          ...prev,
+          tunnelURL: result.tunnel_url
+        }));
+        addNotification('Tunnel created successfully', 'success');
+        return { success: true, tunnel_url: result.tunnel_url };
+      } else {
+        return { success: false, error: result.error || 'Failed to create tunnel' };
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }, [executeCommand, serverPort, serverStatus]);
+
+  const closeTunnel = useCallback(async () => {
+    try {
+      const result = await executeCommand('close_tunnel', { port: serverPort });
+      if (result.success) {
+        setConnectionInfo(prev => ({
+          ...prev,
+          tunnelURL: null
+        }));
+        addNotification('Tunnel closed successfully', 'info');
+        return { success: true };
+      } else {
+        return { success: false, error: result.error };
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }, [executeCommand, serverPort]);
+
+  const getConnectionInfo = useCallback(async () => {
+    if (serverStatus !== 'running') {
+      return { success: false, error: 'Server is not running' };
+    }
+
+    try {
+      const result = await executeCommand('get_connection_info', { port: serverPort });
+      if (result.success) {
+        setConnectionInfo({
+          directIP: result.direct_ip || `localhost:${serverPort}`,
+          tunnelURL: result.tunnel_url || null
+        });
+        return { success: true, connection_info: result };
+      } else {
+        return { success: false, error: result.error };
+      }
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
+  }, [executeCommand, serverPort, serverStatus]);
 
   const connectToPeer = useCallback(async (peerData) => {
     try {
@@ -241,6 +310,7 @@ export const AppProvider = ({ children }) => {
     activeChat,
     serverStatus,
     serverPort,
+    connectionInfo,
     notifications,
     sidebarTab,
     
@@ -250,6 +320,9 @@ export const AppProvider = ({ children }) => {
     loadContacts,
     startServer,
     stopServer,
+    createTunnel,
+    closeTunnel,
+    getConnectionInfo,
     connectToPeer,
     disconnectPeer,
     sendMessage,

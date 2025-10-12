@@ -62,6 +62,12 @@ class WhisperLinkBridge:
                 return self._get_connections()
             elif command == 'disconnect_peer':
                 return self._disconnect_peer(args)
+            elif command == 'create_tunnel':
+                return self._create_tunnel(args)
+            elif command == 'close_tunnel':
+                return self._close_tunnel(args)
+            elif command == 'get_connection_info':
+                return self._get_connection_info(args)
             else:
                 return {'success': False, 'error': f'Unknown command: {command}'}
         except Exception as e:
@@ -230,26 +236,33 @@ class WhisperLinkBridge:
     
     def _start_server(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Start listening server"""
-        if not self.current_user:
+        if not self.current_user or not self.connection_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         port = args.get('port', 9001)
+        use_tunnel = args.get('use_tunnel', False)
         
         try:
-            # This would be implemented with the actual connection manager
-            # For now, return success
-            return {'success': True, 'message': f'Server started on port {port}'}
+            success, info = self.connection_manager.start_listening(port, use_tunnel)
+            if success:
+                return {
+                    'success': True, 
+                    'message': f'Server started on port {port}',
+                    'connection_info': info,
+                    'port': port
+                }
+            else:
+                return {'success': False, 'error': info}
         except Exception as e:
             return {'success': False, 'error': str(e)}
     
     def _stop_server(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Stop listening server"""
-        if not self.current_user:
+        if not self.current_user or not self.connection_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         try:
-            # This would be implemented with the actual connection manager
-            # For now, return success
+            self.connection_manager.stop_listening()
             return {'success': True, 'message': 'Server stopped successfully'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -310,6 +323,66 @@ class WhisperLinkBridge:
         try:
             # This would be implemented with the actual connection manager
             return {'success': True, 'message': f'Disconnected from {peer_username}'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _create_tunnel(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a tunnel for the current server"""
+        if not self.current_user or not self.connection_manager:
+            return {'success': False, 'error': 'Not logged in'}
+        
+        port = args.get('port', self.connection_manager.server_port or 9001)
+        
+        try:
+            if not self.connection_manager.server_port:
+                return {'success': False, 'error': 'Server must be running to create tunnel'}
+            
+            tunnel_url = self.connection_manager.tunnel_manager.create_tunnel(port)
+            if tunnel_url:
+                return {
+                    'success': True, 
+                    'tunnel_url': tunnel_url,
+                    'message': 'Tunnel created successfully'
+                }
+            else:
+                return {'success': False, 'error': 'Failed to create tunnel'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _close_tunnel(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Close the active tunnel"""
+        if not self.current_user or not self.connection_manager:
+            return {'success': False, 'error': 'Not logged in'}
+        
+        port = args.get('port', self.connection_manager.server_port or 9001)
+        
+        try:
+            self.connection_manager.tunnel_manager.close_tunnel(port)
+            return {'success': True, 'message': 'Tunnel closed successfully'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _get_connection_info(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get current connection information"""
+        if not self.current_user or not self.connection_manager:
+            return {'success': False, 'error': 'Not logged in'}
+        
+        port = args.get('port', self.connection_manager.server_port or 9001)
+        
+        try:
+            if not self.connection_manager.server_port:
+                return {'success': False, 'error': 'Server is not running'}
+            
+            # Get tunnel URL if exists
+            tunnel_url = self.connection_manager.tunnel_manager.get_tunnel_url(port)
+            direct_ip = f"localhost:{port}"
+            
+            return {
+                'success': True,
+                'direct_ip': direct_ip,
+                'tunnel_url': tunnel_url,
+                'port': port
+            }
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
