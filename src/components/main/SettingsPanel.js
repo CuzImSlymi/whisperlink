@@ -26,11 +26,13 @@ import {
 import { motion } from 'framer-motion';
 import { useAuth } from '../../context/AuthContext';
 import { useApp } from '../../context/AppContext';
+import ViewPublicKeyDialog from '../dialogs/ViewPublicKeyDialog';
 
 const SettingsPanel = () => {
   const { user } = useAuth();
   const { serverStatus, serverPort, setServerPort, startServer, stopServer } = useApp();
   const [tempPort, setTempPort] = useState(serverPort);
+  const [showPublicKeyDialog, setShowPublicKeyDialog] = useState(false);
   const [settings, setSettings] = useState({
     notifications: true,
     autoConnect: false,
@@ -93,11 +95,16 @@ const SettingsPanel = () => {
               <Chip 
                 label="View" 
                 size="small" 
+                onClick={() => setShowPublicKeyDialog(true)}
                 sx={{ 
                   backgroundColor: 'rgba(35, 134, 54, 0.2)',
                   color: '#238636',
                   height: 20,
-                  fontSize: '0.7rem'
+                  fontSize: '0.7rem',
+                  cursor: 'pointer',
+                  '&:hover': {
+                    backgroundColor: 'rgba(35, 134, 54, 0.3)',
+                  }
                 }} 
               />
             </Box>
@@ -305,6 +312,13 @@ const SettingsPanel = () => {
           </Box>
         </Paper>
       </motion.div>
+
+      {/* Public Key Dialog */}
+      <ViewPublicKeyDialog
+        open={showPublicKeyDialog}
+        onClose={() => setShowPublicKeyDialog(false)}
+        user={user}
+      />
     </Box>
   );
 };
