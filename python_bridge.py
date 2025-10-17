@@ -30,6 +30,25 @@ class WhisperLinkBridge:
         """Initialize user-specific managers"""
         self.contact_manager = ContactManager(user_id=user_id)
         self.connection_manager = ConnectionManager(self.user_manager, self.contact_manager)
+        # Add message handler to connection manager to handle incoming messages
+        self.connection_manager.add_message_handler(self._handle_incoming_message)
+    
+    def _handle_incoming_message(self, peer_id: str, peer_username: str, message: str, timestamp: str):
+        """Handle incoming messages from peers"""
+        # Store message for GUI to retrieve
+        if not hasattr(self, 'pending_messages'):
+            self.pending_messages = []
+        
+        message_data = {
+            'peer_id': peer_id,
+            'peer_username': peer_username,
+            'message': message,
+            'timestamp': timestamp,
+            'type': 'received'
+        }
+        
+        self.pending_messages.append(message_data)
+        print(f"Received message from {peer_username}: {message}", flush=True)
         
     def handle_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Handle commands from Electron frontend"""
@@ -68,6 +87,8 @@ class WhisperLinkBridge:
                 return self._close_tunnel(args)
             elif command == 'get_connection_info':
                 return self._get_connection_info(args)
+            elif command == 'get_pending_messages':
+                return self._get_pending_messages(args)
             else:
                 return {'success': False, 'error': f'Unknown command: {command}'}
         except Exception as e:
@@ -269,26 +290,39 @@ class WhisperLinkBridge:
     
     def _connect_to_peer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Connect to a peer"""
-        if not self.current_user:
+        if not self.current_user or not self.connection_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         peer_username = args.get('peer_username')
-        host = args.get('host')
-        port = args.get('port')
-        ws_url = args.get('ws_url')
         
         if not peer_username:
             return {'success': False, 'error': 'Peer username required'}
         
         try:
-            # This would be implemented with the actual connection manager
-            return {'success': True, 'message': f'Connected to {peer_username}'}
+            # Find the contact by username to get their user_id
+            contacts = self.contact_manager.list_contacts()
+            peer_contact = None
+            for contact in contacts:
+                if contact.username == peer_username:
+                    peer_contact = contact
+                    break
+            
+            if not peer_contact:
+                return {'success': False, 'error': f'Contact {peer_username} not found'}
+            
+            # Use connection manager to connect
+            success = self.connection_manager.connect_to_peer(peer_contact.user_id)
+            
+            if success:
+                return {'success': True, 'message': f'Connected to {peer_username}'}
+            else:
+                return {'success': False, 'error': f'Failed to connect to {peer_username}'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
     
     def _send_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Send message to peer"""
-        if not self.current_user:
+        if not self.current_user or not self.connection_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         peer_username = args.get('peer_username')
@@ -298,22 +332,54 @@ class WhisperLinkBridge:
             return {'success': False, 'error': 'Peer username and message required'}
         
         try:
-            # This would be implemented with the actual connection manager
-            return {'success': True, 'message': 'Message sent'}
+            # Find the contact by username to get their user_id
+            contacts = self.contact_manager.list_contacts()
+            peer_contact = None
+            for contact in contacts:
+                if contact.username == peer_username:
+                    peer_contact = contact
+                    break
+            
+            if not peer_contact:
+                return {'success': False, 'error': f'Contact {peer_username} not found'}
+            
+            # Use connection manager to send message
+            success = self.connection_manager.send_message(peer_contact.user_id, message)
+            
+            if success:
+                return {'success': True, 'message': 'Message sent'}
+            else:
+                return {'success': False, 'error': 'Failed to send message - not connected to peer'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
     
     def _get_connections(self) -> Dict[str, Any]:
         """Get active connections"""
-        if not self.current_user:
+        if not self.current_user or not self.connection_manager:
             return {'success': False, 'error': 'Not logged in'}
         
-        # This would return actual connections from connection manager
-        return {'success': True, 'connections': []}
+        try:
+            connections = self.connection_manager.get_active_connections()
+            connection_list = []
+            
+            for conn in connections:
+                connection_list.append({
+                    'peer_id': conn.peer_id,
+                    'peer_username': conn.peer_username,
+                    'connection_type': conn.connection_type,
+                    'status': conn.status,
+                    'address': conn.address,
+                    'port': conn.port,
+                    'established_at': conn.established_at
+                })
+            
+            return {'success': True, 'connections': connection_list}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
     
     def _disconnect_peer(self, args: Dict[str, Any]) -> Dict[str, Any]:
         """Disconnect from peer"""
-        if not self.current_user:
+        if not self.current_user or not self.connection_manager:
             return {'success': False, 'error': 'Not logged in'}
         
         peer_username = args.get('peer_username')
@@ -321,7 +387,19 @@ class WhisperLinkBridge:
             return {'success': False, 'error': 'Peer username required'}
         
         try:
-            # This would be implemented with the actual connection manager
+            # Find the contact by username to get their user_id
+            contacts = self.contact_manager.list_contacts()
+            peer_contact = None
+            for contact in contacts:
+                if contact.username == peer_username:
+                    peer_contact = contact
+                    break
+            
+            if not peer_contact:
+                return {'success': False, 'error': f'Contact {peer_username} not found'}
+            
+            # Use connection manager to disconnect
+            self.connection_manager.disconnect_from_peer(peer_contact.user_id)
             return {'success': True, 'message': f'Disconnected from {peer_username}'}
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -383,6 +461,22 @@ class WhisperLinkBridge:
                 'tunnel_url': tunnel_url,
                 'port': port
             }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _get_pending_messages(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get and clear pending messages"""
+        if not self.current_user:
+            return {'success': False, 'error': 'Not logged in'}
+        
+        try:
+            if not hasattr(self, 'pending_messages'):
+                self.pending_messages = []
+            
+            messages = self.pending_messages.copy()
+            self.pending_messages.clear()  # Clear after retrieving
+            
+            return {'success': True, 'messages': messages}
         except Exception as e:
             return {'success': False, 'error': str(e)}
 

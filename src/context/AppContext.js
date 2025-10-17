@@ -202,6 +202,19 @@ export const AppProvider = ({ children }) => {
     }
   }, [executeCommand]);
 
+  const loadConnections = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      const result = await executeCommand('get_connections');
+      if (result.success) {
+        setConnections(result.connections || []);
+      }
+    } catch (error) {
+      console.error('Failed to load connections:', error);
+    }
+  }, [executeCommand, user]);
+
   const disconnectPeer = useCallback(async (peerUsername) => {
     try {
       const result = await executeCommand('disconnect_peer', { peer_username: peerUsername });
@@ -292,6 +305,7 @@ export const AppProvider = ({ children }) => {
   useEffect(() => {
     if (user) {
       loadContacts();
+      loadConnections(); // Also load connections when user logs in
     } else {
       // Clear data when user logs out
       setContacts([]);
@@ -301,6 +315,45 @@ export const AppProvider = ({ children }) => {
       setServerStatus('stopped');
     }
   }, [user, loadContacts]);
+
+  // Function to check for pending messages
+  const checkPendingMessages = useCallback(async () => {
+    if (!user) return;
+    
+    try {
+      const result = await executeCommand('get_pending_messages');
+      if (result.success && result.messages && result.messages.length > 0) {
+        result.messages.forEach(msg => {
+          const newMessage = {
+            id: Date.now().toString() + Math.random(),
+            text: msg.message,
+            timestamp: msg.timestamp,
+            sender: msg.peer_username,
+            type: 'received',
+          };
+
+          setMessages(prev => ({
+            ...prev,
+            [msg.peer_username]: [...(prev[msg.peer_username] || []), newMessage],
+          }));
+        });
+      }
+    } catch (error) {
+      console.error('Failed to check pending messages:', error);
+    }
+  }, [executeCommand, user]);
+
+  // Periodically update connections and check for messages
+  useEffect(() => {
+    if (!user) return;
+
+    const interval = setInterval(() => {
+      loadConnections();
+      checkPendingMessages();
+    }, 1000); // Check every second for better responsiveness
+
+    return () => clearInterval(interval);
+  }, [user, loadConnections, checkPendingMessages]);
 
   const value = {
     // State
