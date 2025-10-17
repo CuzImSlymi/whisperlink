@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from './AuthContext';
 
 const AppContext = createContext();
@@ -24,6 +24,9 @@ export const AppProvider = ({ children }) => {
   const [connectionInfo, setConnectionInfo] = useState({ directIP: null, tunnelURL: null });
   const [notifications, setNotifications] = useState([]);
   const [sidebarTab, setSidebarTab] = useState('chats'); // 'chats', 'contacts', 'settings'
+  
+  // Use ref to track previous connections to detect new ones
+  const previousConnectionsRef = useRef([]);
 
   // Contacts management
   const loadContacts = useCallback(async () => {
@@ -208,12 +211,32 @@ export const AppProvider = ({ children }) => {
     try {
       const result = await executeCommand('get_connections');
       if (result.success) {
-        setConnections(result.connections || []);
+        const newConnections = result.connections || [];
+        const previousConnections = previousConnectionsRef.current;
+        
+        setConnections(newConnections);
+        
+        // Check if we have new connections that might have added contacts
+        const newConnectionUsernames = newConnections.map(c => c.peer_username);
+        const previousConnectionUsernames = previousConnections.map(c => c.peer_username);
+        
+        // If there are new connections, reload contacts to pick up auto-added ones
+        const hasNewConnections = newConnectionUsernames.some(username => 
+          !previousConnectionUsernames.includes(username)
+        );
+        
+        if (hasNewConnections) {
+          console.log('New connections detected, reloading contacts...');
+          loadContacts();
+        }
+        
+        // Update the ref with current connections
+        previousConnectionsRef.current = newConnections;
       }
     } catch (error) {
       console.error('Failed to load connections:', error);
     }
-  }, [executeCommand, user]);
+  }, [executeCommand, user, loadContacts]);
 
   const disconnectPeer = useCallback(async (peerUsername) => {
     try {
