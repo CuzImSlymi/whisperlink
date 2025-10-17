@@ -20,7 +20,7 @@ import { useAuth } from '../../context/AuthContext';
 
 const ChatWindow = ({ chatUsername }) => {
   const { user } = useAuth();
-  const { messages, sendMessage, closeChat, connections } = useApp();
+  const { messages, sendMessage, closeChat, connections, addNotification } = useApp();
   const [inputMessage, setInputMessage] = useState('');
   const messagesEndRef = useRef(null);
 
@@ -40,10 +40,31 @@ const ChatWindow = ({ chatUsername }) => {
     
     if (!inputMessage.trim()) return;
     
-    const result = await sendMessage(chatUsername, inputMessage.trim());
+    const messageText = inputMessage.trim();
+    setInputMessage(''); // Clear input immediately for better UX
     
-    if (result.success) {
-      setInputMessage('');
+    try {
+      const result = await sendMessage(chatUsername, messageText);
+      
+      if (!result.success) {
+        // If sending failed, restore the message to input
+        setInputMessage(messageText);
+        console.error('Failed to send message:', result.error);
+        
+        // Show error notification if available
+        if (typeof addNotification === 'function') {
+          addNotification(`Failed to send message: ${result.error}`, 'error');
+        }
+      }
+    } catch (error) {
+      // If sending failed, restore the message to input
+      setInputMessage(messageText);
+      console.error('Error sending message:', error);
+      
+      // Show error notification if available
+      if (typeof addNotification === 'function') {
+        addNotification('Failed to send message', 'error');
+      }
     }
   };
 
@@ -288,12 +309,20 @@ const ChatWindow = ({ chatUsername }) => {
               maxRows={4}
               value={inputMessage}
               onChange={(e) => setInputMessage(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleSendMessage(e);
+                }
+              }}
               placeholder="Type a secure message..."
               variant="outlined"
               size="small"
+              autoFocus
               sx={{
                 '& .MuiOutlinedInput-root': {
                   backgroundColor: 'rgba(13, 17, 23, 0.5)',
+                  color: '#f0f6fc',
                   '& fieldset': {
                     borderColor: '#30363d',
                   },
@@ -303,17 +332,27 @@ const ChatWindow = ({ chatUsername }) => {
                   '&.Mui-focused fieldset': {
                     borderColor: '#238636',
                   },
+                  '& input': {
+                    color: '#f0f6fc',
+                  },
+                  '& textarea': {
+                    color: '#f0f6fc',
+                  },
+                },
+                '& .MuiInputBase-input::placeholder': {
+                  color: '#8b949e',
+                  opacity: 1,
                 },
               }}
             />
             <IconButton
               type="submit"
-              disabled={!inputMessage.trim() || !isConnected}
+              disabled={!inputMessage.trim()}
               sx={{
-                color: '#238636',
-                backgroundColor: 'rgba(35, 134, 54, 0.1)',
+                color: isConnected ? '#238636' : '#d29922',
+                backgroundColor: isConnected ? 'rgba(35, 134, 54, 0.1)' : 'rgba(210, 153, 34, 0.1)',
                 '&:hover': {
-                  backgroundColor: 'rgba(35, 134, 54, 0.2)',
+                  backgroundColor: isConnected ? 'rgba(35, 134, 54, 0.2)' : 'rgba(210, 153, 34, 0.2)',
                 },
                 '&:disabled': {
                   color: '#6e7681',
