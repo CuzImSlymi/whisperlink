@@ -350,7 +350,7 @@ export const AppProvider = ({ children }) => {
     const interval = setInterval(() => {
       loadConnections();
       checkPendingMessages();
-    }, 1000); // Check every second for better responsiveness
+    }, 2000); // Check every 2 seconds to reduce load
 
     return () => clearInterval(interval);
   }, [user, loadConnections, checkPendingMessages]);

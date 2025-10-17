@@ -392,7 +392,7 @@ class ConnectionManager:
             if not self.contact_manager.get_contact(peer_id):
                 print(f"Received connection from new peer '{peer_username}'. Adding to contacts.")
                 self.contact_manager.add_contact(
-                    user_id=peer_id,
+                    contact_user_id=peer_id,
                     username=peer_username,
                     public_key=peer_public_key,
                     connection_type="direct", # Assume direct, as we don't have tunnel info

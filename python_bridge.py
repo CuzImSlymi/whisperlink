@@ -21,6 +21,10 @@ from models import User, Contact, Connection
 
 class WhisperLinkBridge:
     def __init__(self):
+        import sys
+        # Increase max listeners to prevent memory leak warnings
+        import os
+        os.environ['UV_THREADPOOL_SIZE'] = '128'
         self.user_manager = UserManager()
         self.contact_manager = None  # Will be created when user logs in
         self.connection_manager = None  # Will be created when user logs in
