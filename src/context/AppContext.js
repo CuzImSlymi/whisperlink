@@ -264,7 +264,7 @@ export const AppProvider = ({ children }) => {
       if (result.success) {
         // Add message to local state
         const newMessage = {
-          id: Date.now().toString(),
+          id: `${new Date().toISOString()}-${Math.random()}`, // More unique ID
           text: messageText,
           timestamp: new Date().toISOString(),
           sender: user.username,
@@ -347,26 +347,33 @@ export const AppProvider = ({ children }) => {
       const result = await executeCommand('get_pending_messages');
       if (result.success && result.messages && result.messages.length > 0) {
         
-        // Use the functional form of setState to ensure we have the latest state
         setMessages(prevMessages => {
-          const newMessagesState = { ...prevMessages };
-          
-          result.messages.forEach(msg => {
-            const newMessage = {
-              id: `${msg.timestamp}-${msg.peer_id}`,
+          // First, group new messages by peer
+          const newMessagesByPeer = result.messages.reduce((acc, msg) => {
+            const peer = msg.peer_username;
+            if (!acc[peer]) {
+              acc[peer] = [];
+            }
+            
+            acc[peer].push({
+              id: `${msg.timestamp}-${Math.random()}`, // Highly unique ID
               text: msg.message,
               timestamp: msg.timestamp,
               sender: msg.peer_username,
               type: 'received',
-            };
+            });
             
-            const chatHistory = newMessagesState[msg.peer_username] || [];
-            
-            newMessagesState[msg.peer_username] = [...chatHistory, newMessage];
+            return acc;
+          }, {});
+
+          const updatedMessages = { ...prevMessages };
+
+          Object.keys(newMessagesByPeer).forEach(peer => {
+            const existingMessages = prevMessages[peer] || [];
+            updatedMessages[peer] = [...existingMessages, ...newMessagesByPeer[peer]];
           });
-          
-          // Return the single, updated state object
-          return newMessagesState;
+
+          return updatedMessages;
         });
       }
     } catch (error) {
