@@ -19,10 +19,6 @@ from crypto_manager import CryptoManager
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socketserver
 
-# aiohttp is now used for the bridge, but we import it inside the thread
-# to avoid potential multi-threading issues with asyncio loops.
-# We also remove the direct import of websockets as it's no longer used for the server.
-
 class TunnelManager:
     """Manages tunnel connections for privacy using ngrok only"""
     
@@ -177,7 +173,7 @@ class TunnelManager:
             return False
     
     def _start_websocket_bridge(self, tcp_port: int) -> bool:
-        """Start a robust WebSocket server using aiohttp that bridges to TCP."""
+        """Start a WebSocket server using aiohttp that bridges to TCP."""
         
         def run_aiohttp_bridge():
             import asyncio
@@ -388,7 +384,7 @@ class ConnectionManager:
                 client_socket.close()
                 return
 
-            # If the connecting user is not a contact, add them. This is crucial for message exchange.
+            # If the connecting user is not a contact, add them.
             if not self.contact_manager.get_contact(peer_id):
                 print(f"Received connection from new peer '{peer_username}'. Adding to contacts.")
                 self.contact_manager.add_contact(
@@ -525,35 +521,44 @@ class ConnectionManager:
                 'public_key': current_user.public_key
             }
             
-            result = [False]
+            # Create a placeholder connection to show "connecting" status in UI
+            self.connections[peer_id] = Connection(
+                peer_id=peer_id,
+                peer_username=contact.username,
+                connection_type="tunnel_websocket",
+                address="tunnel",
+                port=0,
+                status="connecting",
+                established_at=datetime.now().isoformat(),
+            )
+            
             # We need a reference to the loop for sending messages later
             self.websocket_loop = asyncio.new_event_loop()
             
             def run_async_connect():
                 asyncio.set_event_loop(self.websocket_loop)
                 try:
-                    result[0] = self.websocket_loop.run_until_complete(self._async_tunnel_connect(peer_id, contact, handshake))
-                    if result[0]:
+                    self.websocket_loop.run_until_complete(self._async_tunnel_connect(peer_id, contact, handshake))
+                    if self.websocket_loop.is_running():
                         self.websocket_loop.run_forever()
                 except Exception as e:
-                    print(f"[ERROR] Tunnel connection error: {e}")
-                    result[0] = False
+                    print(f"[ERROR] Tunnel connection thread error: {e}")
+                    self.disconnect_from_peer(peer_id)
                 finally:
-                    if self.websocket_loop.is_running():
-                        self.websocket_loop.stop()
-                    self.websocket_loop.close()
+                    if not self.websocket_loop.is_closed():
+                        if self.websocket_loop.is_running():
+                            self.websocket_loop.stop()
+                        self.websocket_loop.close()
             
             connect_thread = threading.Thread(target=run_async_connect, daemon=True)
             connect_thread.start()
-            
-            # We don't join immediately, just wait for connection result
-            time.sleep(15)  # Give it time to connect
-            return result[0]
+            return True
             
         except Exception as e:
             print(f"[ERROR] Tunnel connection failed: {e}")
+            self.disconnect_from_peer(peer_id)
             return False
-    
+
     async def _async_tunnel_connect(self, peer_id: str, contact: Contact, handshake: dict) -> bool:
         try:
             tunnel_url = contact.tunnel_url.rstrip('/')
@@ -561,86 +566,63 @@ class ConnectionManager:
             return await self._try_websocket_connection(peer_id, contact, handshake, tunnel_url)
         except Exception as e:
             print(f"[ERROR] Tunnel connection error: {e}")
+            self.disconnect_from_peer(peer_id)
             return False
-    
+
     async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
-        import websockets  # Use websockets for the client side
+        import websockets
         
-        # Convert the tunnel URL to a WebSocket URL
         ws_base_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
-        
-        # Headers to help with ngrok and other proxies
-        headers = {
-            'User-Agent': 'WhisperLink/1.0',
-            'ngrok-skip-browser-warning': 'true' # Add this to bypass ngrok's interstitial page
-        }
+        headers = {'User-Agent': 'WhisperLink/1.0', 'ngrok-skip-browser-warning': 'true'}
         
         ssl_context = None
         if ws_base_url.startswith('wss://'):
             ssl_context = ssl.create_default_context()
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
-        
-        # Try connecting to the /ws path first, then fall back to the root path.
+
         for ws_path in ['/ws', '']:
             ws_url = ws_base_url + ws_path
             print(f"Attempting WebSocket connection to: {ws_url}")
             
             try:
                 websocket = await asyncio.wait_for(websockets.connect(
-                    ws_url, 
-                    additional_headers=headers,
-                    ssl=ssl_context, 
-                    open_timeout=20,
-                    ping_interval=30,  # Keep connection alive
-                    ping_timeout=10
+                    ws_url, additional_headers=headers, ssl=ssl_context, 
+                    open_timeout=20, ping_interval=30, ping_timeout=10
                 ), timeout=25.0)
                 
-                # Send handshake
                 await websocket.send(json.dumps(handshake))
-                
-                # Wait for response
                 response_data = await asyncio.wait_for(websocket.recv(), timeout=15.0)
                 response = json.loads(response_data)
                 
                 if response.get('status') == 'accepted':
-                    connection = Connection(
-                        peer_id=peer_id, 
-                        peer_username=contact.username,
-                        connection_type="tunnel_websocket", 
-                        address="tunnel", 
-                        port=0,
-                        status="connected", 
-                        established_at=datetime.now().isoformat(),
-                        websocket_obj=websocket
-                    )
-                    
-                    self.connections[peer_id] = connection
-                    self.contact_manager.update_contact_last_seen(peer_id)
-                    
-                    print(f"[SUCCESS] Successfully connected to {contact.username} via tunnel")
-                    
-                    # Start message handler
-                    asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
-                    return True # Success, exit the function
+                    connection = self.connections.get(peer_id)
+                    if connection:
+                        connection.status = "connected"
+                        connection.established_at = datetime.now().isoformat()
+                        connection.websocket_obj = websocket
+                        self.contact_manager.update_contact_last_seen(peer_id)
+                        print(f"[SUCCESS] Successfully connected to {contact.username} via tunnel")
+                        asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
+                        return True
                 else:
                     await websocket.close()
                     print("[ERROR] Handshake rejected by peer")
-                    return False # Handshake failed, no need to try other paths
+                    self.disconnect_from_peer(peer_id)
+                    return False
                     
             except asyncio.TimeoutError:
                 print(f"[ERROR] Connection timeout for {ws_url}")
-                continue # Try the next path
+                continue
             except Exception as e:
-                # If it's a 404, specifically mention it and try the next path.
                 if 'HTTP 404' in str(e):
                     print(f"[ERROR] Path not found at {ws_url}, trying fallback...")
-                    continue
                 else:
                     print(f"[ERROR] WebSocket connection failed for {ws_url}: {e}")
-                    continue # Try the next path for other errors too
+                continue
         
         print("[ERROR] All WebSocket connection attempts failed")
+        self.disconnect_from_peer(peer_id)
         return False
     
     def _handle_peer_messages(self, peer_id: str):
@@ -701,11 +683,10 @@ class ConnectionManager:
             message_data = {'type': 'chat', 'message': encrypted_message, 'timestamp': datetime.now().isoformat()}
             
             if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
-                future = asyncio.run_coroutine_threadsafe(
+                asyncio.run_coroutine_threadsafe(
                     self._send_websocket_message(connection.websocket_obj, message_data),
                     self.websocket_loop
                 )
-                future.result(timeout=10)  # Wait for the send to complete
                 return True
             elif connection.socket_obj:
                 connection.socket_obj.sendall(json.dumps(message_data).encode())
