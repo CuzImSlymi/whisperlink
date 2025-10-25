@@ -56,7 +56,6 @@ class WhisperLinkBridge:
         
         self.pending_messages.append(message_data)
         print(f"Received message from {peer_username}: {message}", flush=True)
-        print(f"DEBUG: Added message to pending_messages. Total pending: {len(self.pending_messages)}", flush=True)
         
     def handle_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Handle commands from Electron frontend"""
@@ -483,12 +482,8 @@ class WhisperLinkBridge:
             if not hasattr(self, 'delivered_messages'):
                 self.delivered_messages = []
             
-            print(f"DEBUG: get_pending_messages called. Current pending_messages: {len(self.pending_messages)}", flush=True)
-            print(f"DEBUG: pending_messages content: {self.pending_messages}", flush=True)
-            
             # Get undelivered messages
             undelivered_messages = [msg for msg in self.pending_messages if not msg.get('delivered', False)]
-            print(f"DEBUG: Found {len(undelivered_messages)} undelivered messages", flush=True)
             
             # Mark messages as delivered
             for msg in self.pending_messages:
@@ -503,7 +498,6 @@ class WhisperLinkBridge:
             
             # Remove delivered messages from pending (but only after they've been marked)
             self.pending_messages = [msg for msg in self.pending_messages if not msg.get('delivered', False)]
-            print(f"DEBUG: After cleanup, pending_messages: {len(self.pending_messages)}", flush=True)
             
             # Return undelivered messages without the 'delivered' field
             clean_messages = []
@@ -511,7 +505,6 @@ class WhisperLinkBridge:
                 clean_msg = {k: v for k, v in msg.items() if k != 'delivered'}
                 clean_messages.append(clean_msg)
             
-            print(f"DEBUG: Returning {len(clean_messages)} messages to frontend", flush=True)
             return {'success': True, 'messages': clean_messages}
         except Exception as e:
             return {'success': False, 'error': str(e)}
@@ -532,8 +525,14 @@ def main():
                 data = json.loads(line.strip())
                 command = data.get('command')
                 args = data.get('args', {})
+                command_id = data.get('command_id')  # Get command ID
                 
                 response = bridge.handle_command(command, args)
+                
+                # Add command_id to response if provided
+                if command_id:
+                    response['command_id'] = command_id
+                
                 print(json.dumps(response), flush=True)
                 
             except json.JSONDecodeError:

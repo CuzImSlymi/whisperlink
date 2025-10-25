@@ -208,8 +208,11 @@ ipcMain.handle('python-command', async (event, command, args) => {
       return;
     }
 
-    // Send command to Python process
-    const message = JSON.stringify({ command, args }) + '\n';
+    // Generate unique command ID to match responses
+    const commandId = `cmd_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    
+    // Send command to Python process with ID
+    const message = JSON.stringify({ command, args, command_id: commandId }) + '\n';
     
     let buffer = '';
     let timeoutId;
@@ -228,10 +231,18 @@ ipcMain.handle('python-command', async (event, command, args) => {
           if (line && line.startsWith('{')) {
             try {
               const response = JSON.parse(line);
-              cleanup();
-              isResolved = true;
-              resolve(response);
-              return;
+              
+              // Only accept responses with matching command ID
+              if (response.command_id === commandId) {
+                // Remove command_id from response before resolving
+                delete response.command_id;
+                cleanup();
+                isResolved = true;
+                resolve(response);
+                return;
+              }
+              // If command_id doesn't match, ignore this response and continue waiting
+              
             } catch (parseError) {
               console.error('JSON parse error for line:', line, parseError);
             }

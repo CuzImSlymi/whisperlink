@@ -343,15 +343,10 @@ export const AppProvider = ({ children }) => {
   const checkPendingMessages = useCallback(async () => {
     if (!user) return;
     
-    console.log('FRONTEND DEBUG: checkPendingMessages called for user:', user.username);
-    
     try {
       const result = await executeCommand('get_pending_messages');
-      console.log('FRONTEND DEBUG: checkPendingMessages result:', result);
       
       if (result.success && result.messages && result.messages.length > 0) {
-        console.log('FRONTEND DEBUG: Processing messages:', result.messages);
-        
         const newMessagesByPeer = result.messages.reduce((acc, msg) => {
           const peer = msg.peer_username;
           if (!acc[peer]) {
@@ -369,12 +364,8 @@ export const AppProvider = ({ children }) => {
           return acc;
         }, {});
 
-        console.log('FRONTEND DEBUG: newMessagesByPeer:', newMessagesByPeer);
-
         // Update messages state with a functional update to ensure consistency
         setMessages(prevMessages => {
-          console.log('FRONTEND DEBUG: Previous messages state:', prevMessages);
-          
           const updatedMessages = { ...prevMessages };
 
           Object.keys(newMessagesByPeer).forEach(peer => {
@@ -388,18 +379,13 @@ export const AppProvider = ({ children }) => {
               )
             );
             
-            console.log(`FRONTEND DEBUG: For peer ${peer}, found ${newMessages.length} new messages`);
-            
             if (newMessages.length > 0) {
               updatedMessages[peer] = [...existingMessages, ...newMessages];
             }
           });
 
-          console.log('FRONTEND DEBUG: Updated messages state:', updatedMessages);
           return updatedMessages;
         });
-      } else {
-        console.log('FRONTEND DEBUG: No messages to process');
       }
     } catch (error) {
       console.error('Failed to check pending messages:', error);
