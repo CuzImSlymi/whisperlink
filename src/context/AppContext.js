@@ -343,6 +343,8 @@ export const AppProvider = ({ children }) => {
   const checkPendingMessages = useCallback(async () => {
     if (!user) return;
     
+    console.log('FRONTEND DEBUG: checkPendingMessages called for user:', user.username);
+    
     try {
       const result = await executeCommand('get_pending_messages');
       console.log('FRONTEND DEBUG: checkPendingMessages result:', result);
