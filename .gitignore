@@ -206,9 +206,8 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# User files
-.whisperlink/contacts.json
-.whisperlink/users.json
+# WhisperLink user data and cache directories
+.whisperlink/
 
 # Node.js dependencies and build files
 node_modules/
@@ -339,5 +338,3 @@ Temporary Items
 # Package lock files (optional - some teams prefer to commit these)
 # package-lock.json
 # yarn.lock
-
-.whisperlink
