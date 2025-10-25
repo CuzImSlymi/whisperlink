@@ -33,3 +33,4 @@ class Connection:
     established_at: Optional[str] = None
     socket_obj: Optional[object] = None
     websocket_obj: Optional[object] = None
+    asyncio_loop: Optional[object] = None

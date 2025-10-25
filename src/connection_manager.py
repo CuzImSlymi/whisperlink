@@ -173,7 +173,7 @@ class TunnelManager:
             return False
     
     def _start_websocket_bridge(self, tcp_port: int) -> bool:
-        """Start a WebSocket server using aiohttp that bridges to TCP."""
+        """Start a robust WebSocket server using aiohttp that bridges to TCP."""
         
         def run_aiohttp_bridge():
             import asyncio
@@ -384,7 +384,7 @@ class ConnectionManager:
                 client_socket.close()
                 return
 
-            # If the connecting user is not a contact, add them.
+            # If the connecting user is not a contact, add them. This is crucial for message exchange.
             if not self.contact_manager.get_contact(peer_id):
                 print(f"Received connection from new peer '{peer_username}'. Adding to contacts.")
                 self.contact_manager.add_contact(
@@ -532,45 +532,49 @@ class ConnectionManager:
                 established_at=datetime.now().isoformat(),
             )
             
-            # We need a reference to the loop for sending messages later
-            self.websocket_loop = asyncio.new_event_loop()
-            
             def run_async_connect():
-                asyncio.set_event_loop(self.websocket_loop)
+                # Each connection gets its own event loop
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
                 try:
-                    self.websocket_loop.run_until_complete(self._async_tunnel_connect(peer_id, contact, handshake))
-                    if self.websocket_loop.is_running():
-                        self.websocket_loop.run_forever()
+                    loop.run_until_complete(self._async_tunnel_connect(peer_id, contact, handshake, loop))
+                    # If the connection was successful, the loop will have tasks (message handler)
+                    # and we run it forever to keep it alive.
+                    if not loop.is_closed() and self.connections.get(peer_id):
+                        loop.run_forever()
                 except Exception as e:
                     print(f"[ERROR] Tunnel connection thread error: {e}")
                     self.disconnect_from_peer(peer_id)
                 finally:
-                    if not self.websocket_loop.is_closed():
-                        if self.websocket_loop.is_running():
-                            self.websocket_loop.stop()
-                        self.websocket_loop.close()
+                    # Final cleanup of the loop
+                    if not loop.is_closed():
+                        if loop.is_running():
+                            loop.stop()
+                        loop.close()
             
             connect_thread = threading.Thread(target=run_async_connect, daemon=True)
             connect_thread.start()
+            
+            # Immediately return True to indicate the connection process has started
             return True
             
         except Exception as e:
             print(f"[ERROR] Tunnel connection failed: {e}")
-            self.disconnect_from_peer(peer_id)
+            self.disconnect_from_peer(peer_id) # Clean up placeholder
             return False
 
-    async def _async_tunnel_connect(self, peer_id: str, contact: Contact, handshake: dict) -> bool:
+    async def _async_tunnel_connect(self, peer_id: str, contact: Contact, handshake: dict, loop: asyncio.AbstractEventLoop):
         try:
             tunnel_url = contact.tunnel_url.rstrip('/')
             print(f"Connecting to: {tunnel_url}")
-            return await self._try_websocket_connection(peer_id, contact, handshake, tunnel_url)
+            await self._try_websocket_connection(peer_id, contact, handshake, tunnel_url, loop)
         except Exception as e:
             print(f"[ERROR] Tunnel connection error: {e}")
-            self.disconnect_from_peer(peer_id)
-            return False
+            self.disconnect_from_peer(peer_id) # Clean up on failure
+            raise # Re-raise to be caught by the thread's error handler
 
-    async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str):
-        import websockets
+    async def _try_websocket_connection(self, peer_id: str, contact: Contact, handshake: dict, tunnel_url: str, loop: asyncio.AbstractEventLoop):
+        import websockets  # Use websockets for the client side
         
         ws_base_url = tunnel_url.replace('https://', 'wss://').replace('http://', 'ws://')
         headers = {'User-Agent': 'WhisperLink/1.0', 'ngrok-skip-browser-warning': 'true'}
@@ -601,15 +605,17 @@ class ConnectionManager:
                         connection.status = "connected"
                         connection.established_at = datetime.now().isoformat()
                         connection.websocket_obj = websocket
+                        connection.asyncio_loop = loop # Store the loop with the connection
                         self.contact_manager.update_contact_last_seen(peer_id)
                         print(f"[SUCCESS] Successfully connected to {contact.username} via tunnel")
-                        asyncio.create_task(self._handle_websocket_messages_native(peer_id, websocket))
-                        return True
+                        # Start the message handler as a task on this connection's loop
+                        loop.create_task(self._handle_websocket_messages_native(peer_id, websocket))
+                        return # Exit the function on success
                 else:
                     await websocket.close()
                     print("[ERROR] Handshake rejected by peer")
                     self.disconnect_from_peer(peer_id)
-                    return False
+                    return # Handshake failed, stop trying
                     
             except asyncio.TimeoutError:
                 print(f"[ERROR] Connection timeout for {ws_url}")
@@ -623,7 +629,6 @@ class ConnectionManager:
         
         print("[ERROR] All WebSocket connection attempts failed")
         self.disconnect_from_peer(peer_id)
-        return False
     
     def _handle_peer_messages(self, peer_id: str):
         connection = self.connections.get(peer_id)
@@ -671,23 +676,27 @@ class ConnectionManager:
     
     def send_message(self, peer_id: str, message: str) -> bool:
         connection = self.connections.get(peer_id)
-        if not connection or connection.status != "connected": return False
+        if not connection or connection.status != "connected": 
+            return False
         
         current_user = self.user_manager.get_current_user()
         contact = self.contact_manager.get_contact(peer_id)
-        if not current_user or not contact: return False
+        if not current_user or not contact: 
+            return False
         
         try:
             crypto = CryptoManager()
             encrypted_message = crypto.encrypt_message(current_user.private_key, contact.public_key, message)
             message_data = {'type': 'chat', 'message': encrypted_message, 'timestamp': datetime.now().isoformat()}
             
-            if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
+            # For outgoing WebSocket connections, use the loop stored on the connection object
+            if connection.websocket_obj and connection.asyncio_loop and connection.asyncio_loop.is_running():
                 asyncio.run_coroutine_threadsafe(
                     self._send_websocket_message(connection.websocket_obj, message_data),
-                    self.websocket_loop
+                    connection.asyncio_loop
                 )
                 return True
+            # For incoming connections (which use the bridge), use the socket object
             elif connection.socket_obj:
                 connection.socket_obj.sendall(json.dumps(message_data).encode())
                 return True
@@ -712,9 +721,13 @@ class ConnectionManager:
                 try: connection.socket_obj.close()
                 except: pass
             
-            if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
+            # When disconnecting a WebSocket, also stop its dedicated event loop
+            if connection.websocket_obj and connection.asyncio_loop and connection.asyncio_loop.is_running():
                 try:
-                    asyncio.run_coroutine_threadsafe(connection.websocket_obj.close(), self.websocket_loop)
+                    # Close the socket from within its own loop
+                    asyncio.run_coroutine_threadsafe(connection.websocket_obj.close(), connection.asyncio_loop)
+                    # Stop the loop
+                    connection.asyncio_loop.call_soon_threadsafe(connection.asyncio_loop.stop)
                 except: pass
             
             print(f"\nDisconnected from {connection.peer_username}")
