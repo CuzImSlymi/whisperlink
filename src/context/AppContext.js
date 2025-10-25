@@ -346,19 +346,27 @@ export const AppProvider = ({ children }) => {
     try {
       const result = await executeCommand('get_pending_messages');
       if (result.success && result.messages && result.messages.length > 0) {
-        result.messages.forEach(msg => {
-          const newMessage = {
-            id: Date.now().toString() + Math.random(),
-            text: msg.message,
-            timestamp: msg.timestamp,
-            sender: msg.peer_username,
-            type: 'received',
-          };
-
-          setMessages(prev => ({
-            ...prev,
-            [msg.peer_username]: [...(prev[msg.peer_username] || []), newMessage],
-          }));
+        
+        // Use the functional form of setState to ensure we have the latest state
+        setMessages(prevMessages => {
+          const newMessagesState = { ...prevMessages };
+          
+          result.messages.forEach(msg => {
+            const newMessage = {
+              id: `${msg.timestamp}-${msg.peer_id}`,
+              text: msg.message,
+              timestamp: msg.timestamp,
+              sender: msg.peer_username,
+              type: 'received',
+            };
+            
+            const chatHistory = newMessagesState[msg.peer_username] || [];
+            
+            newMessagesState[msg.peer_username] = [...chatHistory, newMessage];
+          });
+          
+          // Return the single, updated state object
+          return newMessagesState;
         });
       }
     } catch (error) {
