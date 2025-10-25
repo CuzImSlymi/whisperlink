@@ -42,13 +42,16 @@ class WhisperLinkBridge:
         # Store message for GUI to retrieve
         if not hasattr(self, 'pending_messages'):
             self.pending_messages = []
+        if not hasattr(self, 'delivered_messages'):
+            self.delivered_messages = []
         
         message_data = {
             'peer_id': peer_id,
             'peer_username': peer_username,
             'message': message,
             'timestamp': timestamp,
-            'type': 'received'
+            'type': 'received',
+            'delivered': False
         }
         
         self.pending_messages.append(message_data)
@@ -469,18 +472,40 @@ class WhisperLinkBridge:
             return {'success': False, 'error': str(e)}
 
     def _get_pending_messages(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get and clear pending messages"""
+        """Get pending messages"""
         if not self.current_user:
             return {'success': False, 'error': 'Not logged in'}
         
         try:
             if not hasattr(self, 'pending_messages'):
                 self.pending_messages = []
+            if not hasattr(self, 'delivered_messages'):
+                self.delivered_messages = []
             
-            messages = self.pending_messages.copy()
-            self.pending_messages.clear()  # Clear after retrieving
+            # Get undelivered messages
+            undelivered_messages = [msg for msg in self.pending_messages if not msg.get('delivered', False)]
             
-            return {'success': True, 'messages': messages}
+            # Mark messages as delivered
+            for msg in self.pending_messages:
+                if not msg.get('delivered', False):
+                    msg['delivered'] = True
+                    # Move to delivered messages list for cleanup later
+                    self.delivered_messages.append(msg)
+            
+            # Clean up old delivered messages (keep only last 100 to prevent memory leak)
+            if len(self.delivered_messages) > 100:
+                self.delivered_messages = self.delivered_messages[-50:]  # Keep last 50
+            
+            # Remove delivered messages from pending (but only after they've been marked)
+            self.pending_messages = [msg for msg in self.pending_messages if not msg.get('delivered', False)]
+            
+            # Return undelivered messages without the 'delivered' field
+            clean_messages = []
+            for msg in undelivered_messages:
+                clean_msg = {k: v for k, v in msg.items() if k != 'delivered'}
+                clean_messages.append(clean_msg)
+            
+            return {'success': True, 'messages': clean_messages}
         except Exception as e:
             return {'success': False, 'error': str(e)}
 

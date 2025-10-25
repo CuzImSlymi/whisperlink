@@ -345,32 +345,43 @@ export const AppProvider = ({ children }) => {
     
     try {
       const result = await executeCommand('get_pending_messages');
+      
       if (result.success && result.messages && result.messages.length > 0) {
-        
-        setMessages(prevMessages => {
-          // First, group new messages by peer
-          const newMessagesByPeer = result.messages.reduce((acc, msg) => {
-            const peer = msg.peer_username;
-            if (!acc[peer]) {
-              acc[peer] = [];
-            }
-            
-            acc[peer].push({
-              id: `${msg.timestamp}-${Math.random()}`, // Highly unique ID
-              text: msg.message,
-              timestamp: msg.timestamp,
-              sender: msg.peer_username,
-              type: 'received',
-            });
-            
-            return acc;
-          }, {});
+        const newMessagesByPeer = result.messages.reduce((acc, msg) => {
+          const peer = msg.peer_username;
+          if (!acc[peer]) {
+            acc[peer] = [];
+          }
+          
+          acc[peer].push({
+            id: `${msg.timestamp}-${Math.random()}`, // Highly unique ID
+            text: msg.message,
+            timestamp: msg.timestamp,
+            sender: msg.peer_username,
+            type: 'received',
+          });
+          
+          return acc;
+        }, {});
 
+        // Update messages state with a functional update to ensure consistency
+        setMessages(prevMessages => {
           const updatedMessages = { ...prevMessages };
 
           Object.keys(newMessagesByPeer).forEach(peer => {
             const existingMessages = prevMessages[peer] || [];
-            updatedMessages[peer] = [...existingMessages, ...newMessagesByPeer[peer]];
+            // Check for duplicate messages based on timestamp + content
+            const newMessages = newMessagesByPeer[peer].filter(newMsg => 
+              !existingMessages.some(existingMsg => 
+                existingMsg.timestamp === newMsg.timestamp && 
+                existingMsg.text === newMsg.text &&
+                existingMsg.sender === newMsg.sender
+              )
+            );
+            
+            if (newMessages.length > 0) {
+              updatedMessages[peer] = [...existingMessages, ...newMessages];
+            }
           });
 
           return updatedMessages;
