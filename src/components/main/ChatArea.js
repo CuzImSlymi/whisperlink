@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Typography, Paper } from '@mui/material';
 import { motion } from 'framer-motion';
-import { 
+import {
   Chat as ChatIcon,
   Security as SecurityIcon,
   Shield as ShieldIcon
@@ -10,6 +10,9 @@ import { useApp } from '../../context/AppContext';
 
 // Sub-components
 import ChatWindow from './ChatWindow';
+import GroupChatWindow from './GroupChatWindow';
+import VoiceCallWindow from './VoiceCallWindow';
+import IncomingCallDialog from '../dialogs/IncomingCallDialog';
 
 const EmptyState = () => (
   <Box
@@ -35,11 +38,11 @@ const EmptyState = () => (
         }}
       >
         <motion.div
-          animate={{ 
+          animate={{
             rotate: [0, 5, -5, 0],
             scale: [1, 1.05, 1, 1.05, 1]
           }}
-          transition={{ 
+          transition={{
             duration: 4,
             repeat: Infinity,
             ease: "easeInOut"
@@ -53,7 +56,7 @@ const EmptyState = () => (
             }}
           />
         </motion.div>
-        
+
         {/* Security badges */}
         <motion.div
           initial={{ scale: 0 }}
@@ -73,7 +76,7 @@ const EmptyState = () => (
             }}
           />
         </motion.div>
-        
+
         <motion.div
           initial={{ scale: 0 }}
           animate={{ scale: 1 }}
@@ -118,7 +121,7 @@ const EmptyState = () => (
           mb: 3,
         }}
       >
-        Select a contact from the sidebar to start a secure, encrypted conversation. 
+        Select a contact or group from the sidebar to start a secure, encrypted conversation.
         Your messages are protected with end-to-end encryption.
       </Typography>
 
@@ -161,8 +164,35 @@ const EmptyState = () => (
 );
 
 const ChatArea = () => {
-  const { activeChat } = useApp();
+  const {
+    activeChat,
+    activeGroup,
+    groups,
+    contacts,
+    activeVoiceCall,
+    incomingCalls,
+    acceptVoiceCall,
+    rejectVoiceCall,
+    endVoiceCall
+  } = useApp();
   const isMacOS = window.electronAPI?.platform === 'darwin';
+
+  // Find the active group if one is selected
+  const currentGroup = activeGroup ? groups.find(g => g.group_id === activeGroup) : null;
+
+  // Get the first incoming call
+  const incomingCall = incomingCalls.length > 0 ? incomingCalls[0] : null;
+
+  // Determine what to show
+  const showVoiceCall = activeVoiceCall && (activeVoiceCall.status === 'active' || activeVoiceCall.status === 'ringing' || activeVoiceCall.status === 'connecting');
+
+  // Get peer username for voice call
+  const getVoiceCallPeerUsername = () => {
+    if (!activeVoiceCall) return 'Unknown';
+    const peerId = activeVoiceCall.peer_id;
+    const contact = contacts?.find(c => c.user_id === peerId);
+    return contact?.username || 'Unknown';
+  };
 
   return (
     <Box
@@ -170,18 +200,36 @@ const ChatArea = () => {
         height: '100%',
         display: 'flex',
         flexDirection: 'column',
-        background: isMacOS 
-          ? 'rgba(13, 17, 23, 0.6)' 
+        background: isMacOS
+          ? 'rgba(13, 17, 23, 0.6)'
           : 'rgba(13, 17, 23, 0.5)',
         backdropFilter: isMacOS ? 'blur(10px)' : 'none',
         WebkitBackdropFilter: isMacOS ? 'blur(10px)' : 'none',
         position: 'relative',
       }}
     >
-      {activeChat ? (
+      {showVoiceCall ? (
+        <VoiceCallWindow
+          call={activeVoiceCall}
+          peerUsername={getVoiceCallPeerUsername()}
+          onEndCall={() => endVoiceCall(activeVoiceCall.call_id)}
+        />
+      ) : activeChat ? (
         <ChatWindow chatUsername={activeChat} />
+      ) : currentGroup ? (
+        <GroupChatWindow group={currentGroup} />
       ) : (
         <EmptyState />
+      )}
+
+      {/* Incoming call dialog */}
+      {incomingCall && (
+        <IncomingCallDialog
+          open={true}
+          caller={incomingCall}
+          onAccept={() => acceptVoiceCall(incomingCall.call_id)}
+          onReject={() => rejectVoiceCall(incomingCall.call_id)}
+        />
       )}
     </Box>
   );

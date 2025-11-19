@@ -313,9 +313,13 @@ class ConnectionManager:
         self.server_port: Optional[int] = None
         self.listening = False
         self.message_handlers: List[callable] = []
+        self.webrtc_signal_handlers: List[callable] = []
     
     def add_message_handler(self, handler: callable):
         self.message_handlers.append(handler)
+    
+    def add_webrtc_signal_handler(self, handler: callable):
+        self.webrtc_signal_handlers.append(handler)
     
     def start_listening(self, port: int = 0, use_tunnel: bool = False) -> Tuple[bool, str]:
         try:
@@ -641,15 +645,36 @@ class ConnectionManager:
                 
                 try:
                     message_data = json.loads(data.decode())
-                    if message_data.get('type') == 'chat':
+                    msg_type = message_data.get('type')
+                    
+                    if msg_type in ('chat', 'group_chat'):
                         current_user = self.user_manager.get_current_user()
                         contact = self.contact_manager.get_contact(peer_id)
                         
                         if current_user and contact:
                             crypto = CryptoManager()
                             decrypted = crypto.decrypt_message(current_user.private_key, contact.public_key, message_data.get('message'))
-                            for handler in self.message_handlers:
-                                handler(peer_id, connection.peer_username, decrypted, message_data.get('timestamp'))
+                            
+                            # For group messages, include group metadata
+                            if msg_type == 'group_chat':
+                                # Pass group info along with the message
+                                for handler in self.message_handlers:
+                                    handler(
+                                        peer_id, 
+                                        connection.peer_username, 
+                                        decrypted, 
+                                        message_data.get('timestamp'),
+                                        is_group=True,
+                                        group_id=message_data.get('group_id'),
+                                        group_name=message_data.get('group_name')
+                                    )
+                            else:
+                                for handler in self.message_handlers:
+                                    handler(peer_id, connection.peer_username, decrypted, message_data.get('timestamp'))
+                    elif msg_type == 'webrtc_signal':
+                        # Handle WebRTC signaling
+                        for handler in self.webrtc_signal_handlers:
+                            handler(peer_id, message_data.get('signal'))
                 except json.JSONDecodeError: continue
         except Exception: pass
         finally:
@@ -660,15 +685,35 @@ class ConnectionManager:
             async for message in websocket:
                 try:
                     message_data = json.loads(message)
-                    if message_data.get('type') == 'chat':
+                    msg_type = message_data.get('type')
+                    
+                    if msg_type in ('chat', 'group_chat'):
                         current_user = self.user_manager.get_current_user()
                         contact = self.contact_manager.get_contact(peer_id)
                         
                         if current_user and contact:
                             crypto = CryptoManager()
                             decrypted = crypto.decrypt_message(current_user.private_key, contact.public_key, message_data.get('message'))
-                            for handler in self.message_handlers:
-                                handler(peer_id, contact.username, decrypted, message_data.get('timestamp'))
+                            
+                            # For group messages, include group metadata
+                            if msg_type == 'group_chat':
+                                for handler in self.message_handlers:
+                                    handler(
+                                        peer_id, 
+                                        contact.username, 
+                                        decrypted, 
+                                        message_data.get('timestamp'),
+                                        is_group=True,
+                                        group_id=message_data.get('group_id'),
+                                        group_name=message_data.get('group_name')
+                                    )
+                            else:
+                                for handler in self.message_handlers:
+                                    handler(peer_id, contact.username, decrypted, message_data.get('timestamp'))
+                    elif msg_type == 'webrtc_signal':
+                        # Handle WebRTC signaling
+                        for handler in self.webrtc_signal_handlers:
+                            handler(peer_id, message_data.get('signal'))
                 except json.JSONDecodeError: continue
         except Exception: pass
         finally:
@@ -737,3 +782,124 @@ class ConnectionManager:
     
     def get_connection(self, peer_id: str) -> Optional[Connection]:
         return self.connections.get(peer_id)
+    
+    def send_group_message(self, group_members: List[str], message: str, group_id: str = None, group_name: str = None) -> Dict[str, bool]:
+        """Send a message to multiple peers (group messaging)
+        
+        Args:
+            group_members: List of user_ids in the group
+            message: Message to send
+            group_id: Optional group identifier
+            group_name: Optional group name
+            
+        Returns:
+            Dictionary mapping user_id to success/failure status
+        """
+        current_user = self.user_manager.get_current_user()
+        if not current_user:
+            return {}
+        
+        results = {}
+        
+        for member_id in group_members:
+            # Don't send to self
+            if member_id == current_user.user_id:
+                continue
+                
+            connection = self.connections.get(member_id)
+            contact = self.contact_manager.get_contact(member_id)
+            
+            # Skip if not connected or not in contacts
+            if not connection or connection.status != "connected" or not contact:
+                results[member_id] = False
+                continue
+            
+            try:
+                crypto = CryptoManager()
+                encrypted_message = crypto.encrypt_message(current_user.private_key, contact.public_key, message)
+                
+                message_data = {
+                    'type': 'group_chat',
+                    'message': encrypted_message,
+                    'timestamp': datetime.now().isoformat(),
+                    'group_id': group_id,
+                    'group_name': group_name,
+                    'sender_id': current_user.user_id,
+                    'sender_username': current_user.username
+                }
+                
+                # Send via websocket or regular socket
+                if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
+                    try:
+                        future = asyncio.run_coroutine_threadsafe(
+                            self._send_websocket_message(connection.websocket_obj, message_data),
+                            self.websocket_loop
+                        )
+                        future.result(timeout=10)
+                        results[member_id] = True
+                    except Exception as e:
+                        print(f"[ERROR] Failed to send group message to {contact.username} via websocket: {e}")
+                        results[member_id] = False
+                elif connection.socket_obj:
+                    try:
+                        connection.socket_obj.sendall(json.dumps(message_data).encode())
+                        results[member_id] = True
+                    except Exception as e:
+                        print(f"[ERROR] Failed to send group message to {contact.username}: {e}")
+                        results[member_id] = False
+                else:
+                    results[member_id] = False
+                    
+            except Exception as e:
+                print(f"[ERROR] Failed to encrypt/send group message to {member_id}: {e}")
+                results[member_id] = False
+        
+        return results
+    
+    def send_webrtc_signal(self, peer_id: str, signal_data: dict) -> bool:
+        """Send WebRTC signaling message to a peer
+        
+        Args:
+            peer_id: User ID of the peer
+            signal_data: WebRTC signaling data (offer, answer, ICE candidate, etc.)
+            
+        Returns:
+            Success status
+        """
+        connection = self.connections.get(peer_id)
+        if not connection or connection.status != "connected":
+            print(f"[ERROR] Cannot send WebRTC signal: not connected to {peer_id}")
+            return False
+        
+        try:
+            message_data = {
+                'type': 'webrtc_signal',
+                'signal': signal_data,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            # Send via websocket or regular socket
+            if connection.websocket_obj and hasattr(self, 'websocket_loop') and self.websocket_loop.is_running():
+                try:
+                    future = asyncio.run_coroutine_threadsafe(
+                        self._send_websocket_message(connection.websocket_obj, message_data),
+                        self.websocket_loop
+                    )
+                    future.result(timeout=10)
+                    return True
+                except Exception as e:
+                    print(f"[ERROR] Failed to send WebRTC signal via websocket: {e}")
+                    return False
+            elif connection.socket_obj:
+                try:
+                    connection.socket_obj.sendall(json.dumps(message_data).encode())
+                    return True
+                except Exception as e:
+                    print(f"[ERROR] Failed to send WebRTC signal: {e}")
+                    return False
+            
+            return False
+            
+        except Exception as e:
+            print(f"[ERROR] Failed to send WebRTC signal: {e}")
+            return False

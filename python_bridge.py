@@ -9,6 +9,7 @@ import json
 import asyncio
 import threading
 from typing import Dict, Any, Optional
+from datetime import datetime
 import os
 
 # Add src directory to path
@@ -17,6 +18,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from user_manager import UserManager
 from contact_manager import ContactManager
 from connection_manager import ConnectionManager
+from group_manager import GroupManager
+from webrtc_manager import WebRTCManager
 from models import User, Contact, Connection
 
 class WhisperLinkBridge:
@@ -28,34 +31,104 @@ class WhisperLinkBridge:
         self.user_manager = UserManager()
         self.contact_manager = None  # Will be created when user logs in
         self.connection_manager = None  # Will be created when user logs in
+        self.group_manager = None # Will be created when user logs in
+        self.webrtc_manager = None  # Will be created when user logs in
+        self.webrtc_loop = None  # Event loop for WebRTC
         self.current_user: Optional[User] = None
+        self.pending_calls = []  # Store pending incoming calls
     
     def _initialize_user_managers(self, user_id: str):
         """Initialize user-specific managers"""
         self.contact_manager = ContactManager(user_id=user_id)
+        self.group_manager = GroupManager(user_id=user_id)
         self.connection_manager = ConnectionManager(self.user_manager, self.contact_manager)
         # Add message handler to connection manager to handle incoming messages
         self.connection_manager.add_message_handler(self._handle_incoming_message)
+        
+        # Initialize WebRTC manager
+        self.webrtc_manager = WebRTCManager(user_id, self._send_webrtc_signal_callback)
+        self.webrtc_manager.add_call_handler('incoming_call', self._handle_incoming_call)
+        self.webrtc_manager.add_call_handler('call_accepted', self._handle_call_accepted)
+        self.webrtc_manager.add_call_handler('call_rejected', self._handle_call_rejected)
+        self.webrtc_manager.add_call_handler('call_ended', self._handle_call_ended)
+        
+        # Add WebRTC signal handler to connection manager
+        self.connection_manager.add_webrtc_signal_handler(self._handle_webrtc_signal)
+        
+        # Create event loop for WebRTC if needed
+        import asyncio
+        try:
+            self.webrtc_loop = asyncio.get_event_loop()
+        except RuntimeError:
+            self.webrtc_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.webrtc_loop)
     
-    def _handle_incoming_message(self, peer_id: str, peer_username: str, message: str, timestamp: str):
+    def _handle_incoming_message(self, peer_id: str, peer_username: str, message: str, timestamp: str, 
+                                  is_group: bool = False, group_id: str = None, group_name: str = None):
         """Handle incoming messages from peers"""
         # Store message for GUI to retrieve
         if not hasattr(self, 'pending_messages'):
             self.pending_messages = []
-        if not hasattr(self, 'delivered_messages'):
-            self.delivered_messages = []
         
         message_data = {
             'peer_id': peer_id,
             'peer_username': peer_username,
             'message': message,
             'timestamp': timestamp,
-            'type': 'received',
-            'delivered': False
+            'type': 'group_received' if is_group else 'received',
+            'is_group': is_group,
+            'group_id': group_id,
+            'group_name': group_name
         }
         
         self.pending_messages.append(message_data)
-        print(f"Received message from {peer_username}: {message}", flush=True)
+        if is_group:
+            print(f"Received group message from {peer_username} in {group_name}: {message}", flush=True)
+        else:
+            print(f"Received message from {peer_username}: {message}", flush=True)
+    
+    def _send_webrtc_signal_callback(self, peer_id: str, signal_data: dict):
+        """Callback for WebRTC manager to send signals via connection_manager"""
+        if self.connection_manager:
+            self.connection_manager.send_webrtc_signal(peer_id, signal_data)
+    
+    def _handle_webrtc_signal(self, peer_id: str, signal_data: dict):
+        """Handle incoming WebRTC signal from peer"""
+        if self.webrtc_manager and self.webrtc_loop:
+            # Run the async handler in the event loop
+            import asyncio
+            asyncio.run_coroutine_threadsafe(
+                self.webrtc_manager.handle_signal(signal_data),
+                self.webrtc_loop
+            )
+    
+    def _handle_incoming_call(self, call_id: str, from_peer: str):
+        """Handle incoming call notification"""
+        # Find peer's contact info
+        contact = self.contact_manager.get_contact(from_peer) if self.contact_manager else None
+        peer_username = contact.username if contact else "Unknown"
+        
+        call_data = {
+            'call_id': call_id,
+            'from_peer': from_peer,
+            'from_username': peer_username,
+            'type': 'incoming_call',
+            'timestamp': datetime.now().isoformat()
+        }
+        self.pending_calls.append(call_data)
+        print(f"Incoming call from {peer_username}", flush=True)
+    
+    def _handle_call_accepted(self, call_id: str, peer_id: str):
+        """Handle call accepted event"""
+        print(f"Call {call_id} accepted by {peer_id}", flush=True)
+    
+    def _handle_call_rejected(self, call_id: str, peer_id: str):
+        """Handle call rejected event"""
+        print(f"Call {call_id} rejected by {peer_id}", flush=True)
+    
+    def _handle_call_ended(self, call_id: str, peer_id: str):
+        """Handle call ended event"""
+        print(f"Call {call_id} ended with {peer_id}", flush=True)
         
     def handle_command(self, command: str, args: Dict[str, Any]) -> Dict[str, Any]:
         """Handle commands from Electron frontend"""
@@ -96,6 +169,34 @@ class WhisperLinkBridge:
                 return self._get_connection_info(args)
             elif command == 'get_pending_messages':
                 return self._get_pending_messages(args)
+            elif command == 'create_group':
+                return self._create_group(args)
+            elif command == 'get_groups':
+                return self._get_groups(args)
+            elif command == 'get_group_details':
+                return self._get_group_details(args)
+            elif command == 'send_group_message':
+                return self._send_group_message(args)
+            elif command == 'add_group_member':
+                return self._add_group_member(args)
+            elif command == 'remove_group_member':
+                return self._remove_group_member(args)
+            elif command == 'leave_group':
+                return self._leave_group(args)
+            elif command == 'delete_group':
+                return self._delete_group(args)
+            elif command == 'start_voice_call':
+                return self._start_voice_call(args)
+            elif command == 'accept_voice_call':
+                return self._accept_voice_call(args)
+            elif command == 'reject_voice_call':
+                return self._reject_voice_call(args)
+            elif command == 'end_voice_call':
+                return self._end_voice_call(args)
+            elif command == 'get_pending_calls':
+                return self._get_pending_calls(args)
+            elif command == 'get_active_calls':
+                return self._get_active_calls()
             else:
                 return {'success': False, 'error': f'Unknown command: {command}'}
         except Exception as e:
@@ -169,6 +270,7 @@ class WhisperLinkBridge:
         # Clear user-specific managers
         self.contact_manager = None
         self.connection_manager = None
+        self.group_manager = None
         return {'success': True}
     
     def _get_current_user(self) -> Dict[str, Any]:
@@ -472,40 +574,383 @@ class WhisperLinkBridge:
             return {'success': False, 'error': str(e)}
 
     def _get_pending_messages(self, args: Dict[str, Any]) -> Dict[str, Any]:
-        """Get pending messages"""
+        """Get and clear pending messages"""
         if not self.current_user:
             return {'success': False, 'error': 'Not logged in'}
         
         try:
             if not hasattr(self, 'pending_messages'):
                 self.pending_messages = []
-            if not hasattr(self, 'delivered_messages'):
-                self.delivered_messages = []
             
-            # Get undelivered messages
-            undelivered_messages = [msg for msg in self.pending_messages if not msg.get('delivered', False)]
+            messages = self.pending_messages.copy()
+            self.pending_messages.clear()  # Clear after retrieving
             
-            # Mark messages as delivered
-            for msg in self.pending_messages:
-                if not msg.get('delivered', False):
-                    msg['delivered'] = True
-                    # Move to delivered messages list for cleanup later
-                    self.delivered_messages.append(msg)
+            return {'success': True, 'messages': messages}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _create_group(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new group"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
+        
+        name = args.get('name')
+        members = args.get('members', [])
+        description = args.get('description')
+        
+        if not name:
+            return {'success': False, 'error': 'Group name required'}
             
-            # Clean up old delivered messages (keep only last 100 to prevent memory leak)
-            if len(self.delivered_messages) > 100:
-                self.delivered_messages = self.delivered_messages[-50:]  # Keep last 50
+        try:
+            group = self.group_manager.create_group(name, members, description)
+            return {
+                'success': True,
+                'group': {
+                    'group_id': group.group_id,
+                    'name': group.name,
+                    'members': group.members,
+                    'created_at': group.created_at,
+                    'admin_id': group.admin_id,
+                    'description': group.description
+                }
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _get_groups(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get all groups"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
             
-            # Remove delivered messages from pending (but only after they've been marked)
-            self.pending_messages = [msg for msg in self.pending_messages if not msg.get('delivered', False)]
+        try:
+            groups = self.group_manager.list_groups()
+            group_list = []
             
-            # Return undelivered messages without the 'delivered' field
-            clean_messages = []
-            for msg in undelivered_messages:
-                clean_msg = {k: v for k, v in msg.items() if k != 'delivered'}
-                clean_messages.append(clean_msg)
+            for group in groups:
+                group_list.append({
+                    'group_id': group.group_id,
+                    'name': group.name,
+                    'members': group.members,
+                    'created_at': group.created_at,
+                    'admin_id': group.admin_id,
+                    'description': group.description
+                })
+                
+            return {'success': True, 'groups': group_list}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _get_group_details(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get group details"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
             
-            return {'success': True, 'messages': clean_messages}
+        group_id = args.get('group_id')
+        if not group_id:
+            return {'success': False, 'error': 'Group ID required'}
+            
+        try:
+            group = self.group_manager.get_group(group_id)
+            if group:
+                return {
+                    'success': True,
+                    'group': {
+                        'group_id': group.group_id,
+                        'name': group.name,
+                        'members': group.members,
+                        'created_at': group.created_at,
+                        'admin_id': group.admin_id,
+                        'description': group.description
+                    }
+                }
+            else:
+                return {'success': False, 'error': 'Group not found'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _send_group_message(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Send message to a group"""
+        if not self.current_user or not self.connection_manager or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
+            
+        group_id = args.get('group_id')
+        message = args.get('message')
+        
+        if not group_id or not message:
+            return {'success': False, 'error': 'Group ID and message required'}
+            
+        try:
+            group = self.group_manager.get_group(group_id)
+            if not group:
+                return {'success': False, 'error': 'Group not found'}
+                
+            # Send message to all group members
+            results = self.connection_manager.send_group_message(
+                group.members, 
+                message, 
+                group_id=group.group_id,
+                group_name=group.name
+            )
+            
+            # Count successful deliveries
+            successful = sum(1 for success in results.values() if success)
+            total = len([m for m in group.members if m != self.current_user.user_id])
+            
+            return {
+                'success': True,
+                'delivered': successful,
+                'total': total,
+                'results': results
+            }
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _add_group_member(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a member to a group"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
+            
+        group_id = args.get('group_id')
+        member_id = args.get('member_id')
+        
+        if not group_id or not member_id:
+            return {'success': False, 'error': 'Group ID and member ID required'}
+            
+        try:
+            group = self.group_manager.get_group(group_id)
+            if not group:
+                return {'success': False, 'error': 'Group not found'}
+                
+            # Check if current user is admin
+            if group.admin_id != self.current_user.user_id:
+                return {'success': False, 'error': 'Only group admin can add members'}
+                
+            success = self.group_manager.add_member(group_id, member_id)
+            if success:
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Member already in group or failed to add'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _remove_group_member(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Remove a member from a group"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
+            
+        group_id = args.get('group_id')
+        member_id = args.get('member_id')
+        
+        if not group_id or not member_id:
+            return {'success': False, 'error': 'Group ID and member ID required'}
+            
+        try:
+            group = self.group_manager.get_group(group_id)
+            if not group:
+                return {'success': False, 'error': 'Group not found'}
+                
+            # Check if current user is admin
+            if group.admin_id != self.current_user.user_id:
+                return {'success': False, 'error': 'Only group admin can remove members'}
+                
+            success = self.group_manager.remove_member(group_id, member_id)
+            if success:
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Member not in group or failed to remove'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _leave_group(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Leave a group"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
+            
+        group_id = args.get('group_id')
+        
+        if not group_id:
+            return {'success': False, 'error': 'Group ID required'}
+            
+        try:
+            group = self.group_manager.get_group(group_id)
+            if not group:
+                return {'success': False, 'error': 'Group not found'}
+                
+            # If admin is leaving, either transfer admin or delete group
+            if group.admin_id == self.current_user.user_id:
+                # Delete the group if admin leaves
+                self.group_manager.delete_group(group_id)
+                return {'success': True, 'message': 'Group deleted (you were the admin)'}
+            else:
+                success = self.group_manager.remove_member(group_id, self.current_user.user_id)
+                if success:
+                    return {'success': True}
+                else:
+                    return {'success': False, 'error': 'Failed to leave group'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _delete_group(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Delete a group"""
+        if not self.current_user or not self.group_manager:
+            return {'success': False, 'error': 'Not logged in'}
+            
+        group_id = args.get('group_id')
+        
+        if not group_id:
+            return {'success': False, 'error': 'Group ID required'}
+            
+        try:
+            group = self.group_manager.get_group(group_id)
+            if not group:
+                return {'success': False, 'error': 'Group not found'}
+                
+            # Check if current user is admin
+            if group.admin_id != self.current_user.user_id:
+                return {'success': False, 'error': 'Only group admin can delete the group'}
+                
+            success = self.group_manager.delete_group(group_id)
+            if success:
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Failed to delete group'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _start_voice_call(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Start a voice call with a peer"""
+        if not self.current_user or not self.webrtc_manager or not self.webrtc_loop:
+            return {'success': False, 'error': 'Not logged in or WebRTC not initialized'}
+            
+        peer_id = args.get('peer_id')
+        if not peer_id:
+            return {'success': False, 'error': 'Peer ID required'}
+            
+        try:
+            # Generate unique call ID
+            import uuid
+            call_id = str(uuid.uuid4())
+            
+            # Start call asynchronously
+            future = asyncio.run_coroutine_threadsafe(
+                self.webrtc_manager.start_call(peer_id, call_id),
+                self.webrtc_loop
+            )
+            success = future.result(timeout=10)
+            
+            if success:
+                return {'success': True, 'call_id': call_id}
+            else:
+                return {'success': False, 'error': 'Failed to start call'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _accept_voice_call(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Accept an incoming voice call"""
+        if not self.current_user or not self.webrtc_manager or not self.webrtc_loop:
+            return {'success': False, 'error': 'Not logged in or WebRTC not initialized'}
+            
+        call_id = args.get('call_id')
+        if not call_id:
+            return {'success': False, 'error': 'Call ID required'}
+            
+        try:
+            # Accept call asynchronously
+            future = asyncio.run_coroutine_threadsafe(
+                self.webrtc_manager.accept_call(call_id),
+                self.webrtc_loop
+            )
+            success = future.result(timeout=10)
+            
+            if success:
+                # Remove from pending calls
+                self.pending_calls = [c for c in self.pending_calls if c['call_id'] != call_id]
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Failed to accept call'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _reject_voice_call(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Reject an incoming voice call"""
+        if not self.current_user or not self.webrtc_manager or not self.webrtc_loop:
+            return {'success': False, 'error': 'Not logged in or WebRTC not initialized'}
+            
+        call_id = args.get('call_id')
+        if not call_id:
+            return {'success': False, 'error': 'Call ID required'}
+            
+        try:
+            # Reject call asynchronously
+            future = asyncio.run_coroutine_threadsafe(
+                self.webrtc_manager.reject_call(call_id),
+                self.webrtc_loop
+            )
+            success = future.result(timeout=10)
+            
+            # Remove from pending calls
+            self.pending_calls = [c for c in self.pending_calls if c['call_id'] != call_id]
+            
+            if success:
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Failed to reject call'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _end_voice_call(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """End an active voice call"""
+        if not self.current_user or not self.webrtc_manager or not self.webrtc_loop:
+            return {'success': False, 'error': 'Not logged in or WebRTC not initialized'}
+            
+        call_id = args.get('call_id')
+        if not call_id:
+            return {'success': False, 'error': 'Call ID required'}
+            
+        try:
+            # End call asynchronously
+            future = asyncio.run_coroutine_threadsafe(
+                self.webrtc_manager.end_call(call_id),
+                self.webrtc_loop
+            )
+            success = future.result(timeout=10)
+            
+            if success:
+                return {'success': True}
+            else:
+                return {'success': False, 'error': 'Failed to end call'}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _get_pending_calls(self, args: Dict[str, Any]) -> Dict[str, Any]:
+        """Get pending incoming calls"""
+        try:
+            calls = self.pending_calls.copy()
+            # Clear pending calls after retrieving
+            self.pending_calls = []
+            return {'success': True, 'calls': calls}
+        except Exception as e:
+            return {'success': False, 'error': str(e)}
+
+    def _get_active_calls(self) -> Dict[str, Any]:
+        """Get all active calls"""
+        if not self.webrtc_manager:
+            return {'success': False, 'error': 'WebRTC not initialized'}
+            
+        try:
+            calls = self.webrtc_manager.get_all_active_calls()
+            calls_data = [
+                {
+                    'call_id': call.call_id,
+                    'peer_id': call.callee_id if call.direction == 'outgoing' else call.caller_id,
+                    'direction': call.direction,
+                    'status': call.status,
+                    'created_at': call.created_at,
+                    'started_at': call.started_at
+                }
+                for call in calls
+            ]
+            return {'success': True, 'calls': calls_data}
         except Exception as e:
             return {'success': False, 'error': str(e)}
 
@@ -525,14 +970,8 @@ def main():
                 data = json.loads(line.strip())
                 command = data.get('command')
                 args = data.get('args', {})
-                command_id = data.get('command_id')  # Get command ID
                 
                 response = bridge.handle_command(command, args)
-                
-                # Add command_id to response if provided
-                if command_id:
-                    response['command_id'] = command_id
-                
                 print(json.dumps(response), flush=True)
                 
             except json.JSONDecodeError:

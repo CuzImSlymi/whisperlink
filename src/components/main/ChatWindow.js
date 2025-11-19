@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { 
-  Box, 
-  TextField, 
-  IconButton, 
+import {
+  Box,
+  TextField,
+  IconButton,
   Typography,
   Paper,
   Avatar,
   Chip
 } from '@mui/material';
-import { 
+import {
   Send as SendIcon,
   Lock as LockIcon,
   Circle as CircleIcon,
-  Close as CloseIcon
+  Close as CloseIcon,
+  Phone as PhoneIcon
 } from '@mui/icons-material';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useApp } from '../../context/AppContext';
@@ -20,7 +21,7 @@ import { useAuth } from '../../context/AuthContext';
 
 const ChatWindow = ({ chatUsername }) => {
   const { user } = useAuth();
-  const { messages, sendMessage, closeChat, connections, addNotification } = useApp();
+  const { messages, sendMessage, closeChat, connections, addNotification, contacts, startVoiceCall } = useApp();
   const [inputMessage, setInputMessage] = useState('');
   const messagesEndRef = useRef(null);
 
@@ -37,20 +38,20 @@ const ChatWindow = ({ chatUsername }) => {
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
-    
+
     if (!inputMessage.trim()) return;
-    
+
     const messageText = inputMessage.trim();
     setInputMessage(''); // Clear input immediately for better UX
-    
+
     try {
       const result = await sendMessage(chatUsername, messageText);
-      
+
       if (!result.success) {
         // If sending failed, restore the message to input
         setInputMessage(messageText);
         console.error('Failed to send message:', result.error);
-        
+
         // Show error notification if available
         if (typeof addNotification === 'function') {
           addNotification(`Failed to send message: ${result.error}`, 'error');
@@ -60,7 +61,7 @@ const ChatWindow = ({ chatUsername }) => {
       // If sending failed, restore the message to input
       setInputMessage(messageText);
       console.error('Error sending message:', error);
-      
+
       // Show error notification if available
       if (typeof addNotification === 'function') {
         addNotification('Failed to send message', 'error');
@@ -105,7 +106,7 @@ const ChatWindow = ({ chatUsername }) => {
           >
             {chatUsername.charAt(0).toUpperCase()}
           </Avatar>
-          
+
           <Box>
             <Typography
               variant="subtitle1"
@@ -135,30 +136,54 @@ const ChatWindow = ({ chatUsername }) => {
               >
                 {isConnected ? 'Online' : 'Offline'}
               </Typography>
-              <LockIcon 
-                sx={{ 
-                  color: '#238636', 
+              <LockIcon
+                sx={{
+                  color: '#238636',
                   fontSize: 12,
                   ml: 1
-                }} 
+                }}
               />
             </Box>
           </Box>
         </Box>
 
-        <IconButton
-          onClick={closeChat}
-          size="small"
-          sx={{
-            color: '#8b949e',
-            '&:hover': {
-              color: '#f0f6fc',
-              backgroundColor: 'rgba(139, 148, 158, 0.1)',
-            },
-          }}
-        >
-          <CloseIcon fontSize="small" />
-        </IconButton>
+        <Box sx={{ display: 'flex', gap: 1 }}>
+          {/* Voice call button */}
+          {isConnected && (
+            <IconButton
+              onClick={async () => {
+                const contact = contacts?.find(c => c.username === chatUsername);
+                if (contact) {
+                  await startVoiceCall(contact.user_id);
+                }
+              }}
+              size="small"
+              sx={{
+                color: '#58a6ff',
+                '&:hover': {
+                  backgroundColor: 'rgba(88, 166, 255, 0.1)',
+                },
+              }}
+              title="Start voice call"
+            >
+              <PhoneIcon fontSize="small" />
+            </IconButton>
+          )}
+
+          <IconButton
+            onClick={closeChat}
+            size="small"
+            sx={{
+              color: '#8b949e',
+              '&:hover': {
+                color: '#f0f6fc',
+                backgroundColor: 'rgba(139, 148, 158, 0.1)',
+              },
+            }}
+          >
+            <CloseIcon fontSize="small" />
+          </IconButton>
+        </Box>
       </Box>
 
       {/* Messages Area */}
@@ -300,7 +325,7 @@ const ChatWindow = ({ chatUsername }) => {
             }}
           />
         )}
-        
+
         <form onSubmit={handleSendMessage}>
           <Box sx={{ display: 'flex', gap: 1, alignItems: 'end' }}>
             <TextField

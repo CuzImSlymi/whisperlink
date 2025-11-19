@@ -1,5 +1,5 @@
 from dataclasses import dataclass, asdict
-from typing import Optional
+from typing import Optional, List
 
 @dataclass
 class User:
@@ -33,4 +33,12 @@ class Connection:
     established_at: Optional[str] = None
     socket_obj: Optional[object] = None
     websocket_obj: Optional[object] = None
-    asyncio_loop: Optional[object] = None
+
+@dataclass
+class Group:
+    group_id: str
+    name: str
+    members: List[str]  # List of user_ids
+    created_at: str
+    admin_id: str
+    description: Optional[str] = None
